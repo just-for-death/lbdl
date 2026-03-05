@@ -240,7 +240,7 @@ class WSLogHandler(logging.Handler):
             return
 
         payload = {
-            "time":    self.formatTime(record, "%H:%M:%S"),
+            "time":    logging.Formatter().formatTime(record, "%H:%M:%S"),
             "level":   record.levelname,
             "logger":  record.name,
             "message": msg,
