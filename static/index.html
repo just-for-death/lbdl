@@ -130,8 +130,8 @@ html,body { height:100%; background:var(--bg); color:var(--text);
 /* Source tabs */
 .source-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 3px;
   background: var(--bg3);
   border-radius: var(--r-sm);
   padding: 3px;
@@ -144,12 +144,13 @@ html,body { height:100%; background:var(--bg); color:var(--text);
   color: var(--muted);
   cursor: pointer;
   font-family: var(--font-body);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.03em;
-  padding: 6px 4px;
+  padding: 6px 2px;
   text-align: center;
   transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
 }
 .source-tab.active {
   background: var(--grad);
@@ -296,6 +297,7 @@ input[type="text"]::placeholder { color: var(--muted); }
   font-size: 12px;
 }
 .saved-icon.lb  { background: linear-gradient(135deg,#eb743b22,#eb743b44); color:#eb743b; }
+.saved-icon.yt  { background: linear-gradient(135deg,#ff000018,#ff222230); color:#ff4444; }
 .saved-icon.inv { background: linear-gradient(135deg,#4da6ff22,#4da6ff44); color:#4da6ff; }
 
 .saved-name {
@@ -476,6 +478,7 @@ input[type="text"]::placeholder { color: var(--muted); }
   font-weight: 600;
 }
 .jc-source-badge.lb  { background:#eb743b1a; color:#eb743b; }
+.jc-source-badge.yt  { background:#ff000018; color:#ff4444; }
 .jc-source-badge.inv { background:#4da6ff1a; color:#4da6ff; }
 
 .jc-name {
@@ -897,6 +900,7 @@ input[type="text"]::placeholder { color: var(--muted); }
       <!-- Source selector -->
       <div class="source-tabs" role="tablist" aria-label="Playlist source">
         <button class="source-tab active" id="tab-lb"  role="tab" aria-selected="true">ListenBrainz</button>
+        <button class="source-tab"        id="tab-yt"  role="tab" aria-selected="false">YouTube</button>
         <button class="source-tab"        id="tab-inv" role="tab" aria-selected="false">Invidious</button>
       </div>
 
@@ -912,11 +916,28 @@ input[type="text"]::placeholder { color: var(--muted); }
                    aria-labelledby="url-label"/>
           </div>
         </div>
+        <!-- YouTube: shows which Invidious instance will proxy the request -->
+        <div class="invidious-field" id="yt-hint-field">
+          <div class="field-label">Invidious proxy instance</div>
+          <div class="input-wrap">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            <input type="text" id="ytInstance" placeholder="https://inv.nadeko.net" autocomplete="off"/>
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5;">
+            YouTube URLs are fetched via this Invidious instance.<br>
+            Leave blank to use the server default.
+          </div>
+        </div>
+        <!-- Invidious: custom instance URL the playlist lives on -->
         <div class="invidious-field" id="inv-instance-field">
-          <div class="field-label">Invidious Instance <span style="color:var(--border2);font-size:9px">(auto-detected)</span></div>
+          <div class="field-label">Invidious Instance</div>
           <div class="input-wrap">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             <input type="text" id="invInstance" placeholder="https://inv.nadeko.net" autocomplete="off"/>
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5;">
+            The instance your playlist URL is hosted on.<br>
+            Auto-detected from the URL if left blank.
           </div>
         </div>
         <button class="btn-download" id="submitBtn">
@@ -1053,22 +1074,28 @@ async function loadConfig() {
 // ═══════════════════════════════════════════════════════════════════════════
 function setSource(src) {
   S.source = src
-  $('tab-lb').classList.toggle('active', src === 'listenbrainz')
+  $('tab-lb').classList.toggle('active',  src === 'listenbrainz')
+  $('tab-yt').classList.toggle('active',  src === 'youtube')
   $('tab-inv').classList.toggle('active', src === 'invidious')
-  $('tab-lb').setAttribute('aria-selected', src === 'listenbrainz')
+  $('tab-lb').setAttribute('aria-selected',  src === 'listenbrainz')
+  $('tab-yt').setAttribute('aria-selected',  src === 'youtube')
   $('tab-inv').setAttribute('aria-selected', src === 'invidious')
+
+  $('yt-hint-field').classList.toggle('visible',  src === 'youtube')
   $('inv-instance-field').classList.toggle('visible', src === 'invidious')
 
-  if (src === 'listenbrainz') {
-    $('urlInput').placeholder = 'https://listenbrainz.org/playlist/…'
-  } else {
-    $('urlInput').placeholder = 'https://youtu.be/playlist?list=PL… or Invidious URL'
+  const placeholders = {
+    listenbrainz: 'https://listenbrainz.org/playlist/…',
+    youtube:      'https://youtube.com/playlist?list=PLxxxxxx',
+    invidious:    'https://invidious.example.com/playlist?list=PL…',
   }
+  $('urlInput').placeholder = placeholders[src]
   $('urlInput').value = ''
   $('urlInput').focus()
 }
 
 $('tab-lb').addEventListener('click',  () => setSource('listenbrainz'))
+$('tab-yt').addEventListener('click',  () => setSource('youtube'))
 $('tab-inv').addEventListener('click', () => setSource('invidious'))
 
 // Auto-detect source when URL is pasted
@@ -1080,8 +1107,14 @@ $('urlInput').addEventListener('input', () => {
     const host = u.hostname.replace(/^www\./, '')
     if (host === 'listenbrainz.org') {
       setSource('listenbrainz')
+      $('urlInput').value = v   // restore after setSource clears it
+    } else if (host === 'youtube.com' || host === 'youtu.be' || host === 'm.youtube.com') {
+      setSource('youtube')
+      $('urlInput').value = v
     } else if (u.searchParams.has('list')) {
+      // Any other domain with ?list= is an Invidious instance
       setSource('invidious')
+      $('urlInput').value = v
     }
   } catch {}
 })
@@ -1098,7 +1131,13 @@ async function submitJob() {
 
   try {
     const body = { playlist_url: url }
-    if (S.source === 'invidious') {
+
+    if (S.source === 'youtube') {
+      // YouTube → routed through Invidious; pass the proxy instance if user overrode it
+      const inst = $('ytInstance').value.trim()
+      if (inst) body.invidious_instance = inst
+    } else if (S.source === 'invidious') {
+      // Invidious direct — pass the instance the playlist lives on
       const inst = $('invInstance').value.trim()
       if (inst) body.invidious_instance = inst
     }
@@ -1223,8 +1262,8 @@ function renderCard(jobId) {
   const done  = job.tracks.filter(t => t.status==='done').length
   const total = job.tracks.length
   const pct   = total ? Math.round(done/total*100) : 0
-  const srcCls = job.source === 'invidious' ? 'inv' : 'lb'
-  const srcLabel = job.source === 'invidious' ? '▶ Invidious' : '♬ ListenBrainz'
+  const srcCls   = job.source === 'youtube' ? 'yt' : job.source === 'invidious' ? 'inv' : 'lb'
+  const srcLabel  = job.source === 'youtube' ? '▶ YouTube' : job.source === 'invidious' ? '▶ Invidious' : '♬ ListenBrainz'
 
   if (!card) {
     card = document.createElement('div')
@@ -1271,7 +1310,7 @@ function renderDetail(jobId) {
   panel.innerHTML = `
     ${backBtn}
     <div id="detail-header">
-      <div class="dh-art">${job.source==='invidious' ? '▶' : '♬'}</div>
+      <div class="dh-art">${job.source==='youtube' ? '▶' : job.source==='invidious' ? '▶' : '♬'}</div>
       <div class="dh-meta">
         <div class="dh-title">${esc(job.playlist_name)}</div>
         <div class="dh-sub" id="dh-sub-inner">
@@ -1400,8 +1439,8 @@ async function loadSaved() {
     c.innerHTML = ''
     list.forEach(p => {
       const src = p.source || 'listenbrainz'
-      const iconCls = src === 'invidious' ? 'inv' : 'lb'
-      const iconChar = src === 'invidious' ? '▶' : '♬'
+      const iconCls  = src === 'youtube' ? 'yt' : src === 'invidious' ? 'inv' : 'lb'
+      const iconChar = src === 'listenbrainz' ? '♬' : '▶'
 
       const item = document.createElement('div')
       item.className = 'saved-item'
@@ -1422,10 +1461,10 @@ async function loadSaved() {
 }
 
 async function runSaved(url, src) {
-  const parsed = new URL(url)
-  const host = parsed.hostname.replace(/^www\./, '')
-  if (host === 'listenbrainz.org') setSource('listenbrainz')
-  else if (parsed.searchParams.has('list')) setSource('invidious')
+  // Set the correct tab before submitting
+  if (src === 'youtube') setSource('youtube')
+  else if (src === 'invidious') setSource('invidious')
+  else setSource('listenbrainz')
   $('urlInput').value = url
   await submitJob()
 }

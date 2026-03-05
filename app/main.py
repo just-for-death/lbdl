@@ -133,12 +133,14 @@ subscribers: dict[str, list[WebSocket]] = {}
 # ── URL Detection ─────────────────────────────────────────────────────────────
 
 def detect_source(url: str) -> str:
-    """Return 'listenbrainz' or 'invidious' based on URL shape."""
+    """Return 'listenbrainz', 'youtube', or 'invidious' based on URL shape."""
     parsed = urllib.parse.urlparse(url)
     host = parsed.netloc.lower().lstrip("www.")
     if "listenbrainz.org" in host:
         return "listenbrainz"
-    # Any URL with ?list= param (YouTube, Invidious instances, etc.)
+    if host in ("youtube.com", "youtu.be", "m.youtube.com"):
+        return "youtube"
+    # Any other domain with ?list= is an Invidious instance
     params = urllib.parse.parse_qs(parsed.query)
     if "list" in params:
         return "invidious"
@@ -264,7 +266,7 @@ async def process_job(job: Job):
         await broadcast(job.id, {"type": "log", "msg": msg})
 
     try:
-        if job.source == "invidious":
+        if job.source in ("invidious", "youtube"):
             await _process_invidious_job(job, log)
         else:
             await _process_lb_job(job, log)
@@ -426,12 +428,12 @@ async def create_job(body: dict):
         if not get_lb_playlist_id(url):
             return {"error": "Invalid ListenBrainz playlist URL — expected format: https://listenbrainz.org/playlist/<uuid>"}
 
-    elif source == "invidious":
+    elif source in ("youtube", "invidious"):
         if not get_yt_playlist_id(url):
             return {"error": "No playlist ID found in URL — expected ?list=PLxxxxxx"}
 
     else:
-        return {"error": "Unrecognised URL — paste a ListenBrainz playlist URL or a YouTube/Invidious playlist URL (?list=…)"}
+        return {"error": "Unrecognised URL — paste a ListenBrainz, YouTube, or Invidious playlist URL"}
 
     invidious_instance = body.get("invidious_instance", "").strip()
 
