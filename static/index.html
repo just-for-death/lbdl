@@ -1,0 +1,1551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="theme-color" content="#0d0d18"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="lbdl"/>
+<meta name="description" content="Download ListenBrainz & Invidious playlists as organised audio files"/>
+<title>lbdl</title>
+<link rel="manifest" href="/static/manifest.json"/>
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg"/>
+<link rel="apple-touch-icon" href="/static/icon.svg"/>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════ TOKENS ══════════════════════════════════ */
+:root {
+  --bg:        #0d0d18;
+  --bg2:       #13131f;
+  --bg3:       #1a1a2a;
+  --bg4:       #20203080;
+  --sidebar:   #0a0a14;
+  --card:      #16162480;
+  --border:    #ffffff0f;
+  --border2:   #ffffff18;
+  --muted:     #5a5a7a;
+  --dim:       #8888a8;
+  --text:      #e8e8f4;
+  --white:     #ffffff;
+
+  --purple:    #a044ff;
+  --pink:      #ee10b0;
+  --grad:      linear-gradient(135deg, #a044ff 0%, #ee10b0 100%);
+  --grad-soft: linear-gradient(135deg, #a044ff22 0%, #ee10b022 100%);
+  --grad-glow: linear-gradient(135deg, #a044ff44 0%, #ee10b044 100%);
+
+  --green:     #1ed760;
+  --red:       #ff4d6a;
+  --yellow:    #ffb800;
+  --blue:      #4da6ff;
+
+  --r:         10px;
+  --r-sm:      6px;
+  --r-full:    999px;
+  --safe-b:    env(safe-area-inset-bottom, 0px);
+
+  --font-head: 'Syne', sans-serif;
+  --font-body: 'Plus Jakarta Sans', sans-serif;
+}
+
+/* ═══════════════════════════════ RESET ═══════════════════════════════════ */
+*,*::before,*::after { box-sizing: border-box; margin:0; padding:0; }
+html,body { height:100%; background:var(--bg); color:var(--text);
+            font-family:var(--font-body); font-size:14px; overflow:hidden; }
+
+/* ═══════════════════════════════ SCROLLBARS ══════════════════════════════ */
+::-webkit-scrollbar { width:3px; height:3px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--border2); border-radius:2px; }
+::-webkit-scrollbar-thumb:hover { background:var(--muted); }
+
+/* ═══════════════════════════════ LAYOUT ══════════════════════════════════ */
+#app {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  grid-template-rows: 1fr auto;
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* ═══════════════════════════════ SIDEBAR ══════════════════════════════════ */
+#sidebar {
+  grid-row: 1 / 3;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Subtle grid texture on sidebar */
+#sidebar::before {
+  content:'';
+  position:absolute; inset:0; pointer-events:none;
+  background-image: radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0);
+  background-size: 24px 24px;
+  opacity: 0.4;
+}
+
+.sidebar-top {
+  padding: 24px 20px 0;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+
+/* Logo */
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+  text-decoration: none;
+}
+.logo-mark {
+  width: 34px; height: 34px;
+  background: var(--grad);
+  border-radius: var(--r-sm);
+  display: flex; align-items:center; justify-content:center;
+  font-family: var(--font-head);
+  font-weight: 800;
+  font-size: 13px;
+  color: #fff;
+  letter-spacing: -0.5px;
+  flex-shrink: 0;
+  box-shadow: 0 4px 16px #a044ff44;
+}
+.logo-text {
+  font-family: var(--font-head);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--white);
+  letter-spacing: -0.3px;
+}
+.logo-text span { background: var(--grad); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+
+/* Source tabs */
+.source-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  background: var(--bg3);
+  border-radius: var(--r-sm);
+  padding: 3px;
+  margin-bottom: 14px;
+}
+.source-tab {
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  padding: 6px 4px;
+  text-align: center;
+  transition: background 0.15s, color 0.15s;
+}
+.source-tab.active {
+  background: var(--grad);
+  color: #fff;
+  box-shadow: 0 2px 8px #a044ff40;
+}
+
+/* Input area */
+.input-area {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+
+.field-label {
+  font-size: 10px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.input-wrap svg {
+  position: absolute;
+  left: 10px;
+  color: var(--muted);
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+input[type="text"] {
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 12px;
+  padding: 9px 10px 9px 32px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+input[type="text"]:focus {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 2px #a044ff22;
+}
+input[type="text"]::placeholder { color: var(--muted); }
+
+.invidious-field { display:none; }
+.invidious-field.visible { display:block; }
+
+.btn-download {
+  width: 100%;
+  background: var(--grad);
+  border: none;
+  border-radius: var(--r-sm);
+  color: #fff;
+  cursor: pointer;
+  font-family: var(--font-head);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 10px;
+  transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+  box-shadow: 0 4px 14px #a044ff40;
+  margin-top: 2px;
+}
+.btn-download:hover { opacity: 0.9; box-shadow: 0 6px 20px #a044ff55; }
+.btn-download:active { transform: scale(0.98); }
+.btn-download:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+
+/* Divider */
+.sidebar-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 14px 0 0;
+  flex-shrink: 0;
+  position: relative; z-index:1;
+}
+
+/* Saved playlists */
+.sidebar-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative; z-index:1;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px 6px;
+  flex-shrink: 0;
+}
+.section-title {
+  font-size: 10px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.section-hint {
+  font-size: 9px;
+  color: var(--border2);
+}
+
+.saved-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.saved-empty {
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.saved-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+  cursor: pointer;
+  transition: background 0.12s;
+  position: relative;
+  group: saved;
+}
+.saved-item:hover { background: var(--bg3); }
+
+.saved-icon {
+  width: 28px; height: 28px; flex-shrink: 0;
+  border-radius: 5px;
+  display: flex; align-items:center; justify-content:center;
+  font-size: 12px;
+}
+.saved-icon.lb  { background: linear-gradient(135deg,#eb743b22,#eb743b44); color:#eb743b; }
+.saved-icon.inv { background: linear-gradient(135deg,#4da6ff22,#4da6ff44); color:#4da6ff; }
+
+.saved-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.saved-item:hover .saved-actions { opacity: 1; }
+
+.saved-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 3px 5px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  transition: color 0.12s, background 0.12s;
+}
+.saved-btn:hover { background: var(--bg4); }
+.saved-btn.run:hover { color: var(--purple); }
+.saved-btn.del:hover { color: var(--red); }
+
+/* Install button */
+#installBtn {
+  display: none;
+  margin: 0 20px 14px;
+  align-items: center;
+  gap: 7px;
+  background: var(--grad-soft);
+  border: 1px solid #a044ff44;
+  border-radius: var(--r-sm);
+  color: var(--purple);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 8px 12px;
+  transition: background 0.15s;
+  position: relative; z-index:1;
+  flex-shrink: 0;
+}
+#installBtn.show { display:flex; }
+#installBtn:hover { background: var(--grad-glow); }
+
+/* ═══════════════════════════════ MAIN ════════════════════════════════════ */
+#main {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* Top bar */
+#topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 28px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.topbar-title {
+  font-family: var(--font-head);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--white);
+  letter-spacing: -0.3px;
+}
+
+.topbar-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.topbar-right { display:flex; align-items:center; gap:10px; }
+
+/* Queue indicator */
+.queue-badge {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  background: var(--grad-soft);
+  border: 1px solid #a044ff33;
+  border-radius: var(--r-full);
+  color: var(--purple);
+  font-size: 11px;
+  padding: 4px 10px;
+  animation: pulse 2s ease-in-out infinite;
+}
+.queue-badge.show { display:flex; }
+
+/* Content split */
+#content {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ─── Jobs panel ─── */
+#jobs-panel {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.jobs-header {
+  padding: 14px 16px 8px;
+  font-size: 10px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+#job-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+}
+#job-list:empty::after {
+  content: 'No downloads yet';
+  display: block;
+  text-align: center;
+  padding: 36px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.job-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  cursor: pointer;
+  margin-bottom: 8px;
+  padding: 14px;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+  animation: slideUp 0.22s cubic-bezier(.22,.68,0,1.2);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.job-card:hover { border-color: var(--border2); transform: translateY(-1px); }
+.job-card.active {
+  border-color: var(--purple);
+  background: #a044ff12;
+  box-shadow: 0 0 0 1px #a044ff22, inset 0 1px 0 #a044ff1a;
+}
+
+.jc-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.jc-source-badge {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: var(--r-full);
+  padding: 2px 7px;
+  font-weight: 600;
+}
+.jc-source-badge.lb  { background:#eb743b1a; color:#eb743b; }
+.jc-source-badge.inv { background:#4da6ff1a; color:#4da6ff; }
+
+.jc-name {
+  font-family: var(--font-head);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--white);
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jc-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-badge {
+  border-radius: var(--r-full);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+.status-badge.queued  { background:var(--bg3); color:var(--muted); }
+.status-badge.running { background:#a044ff22; color:var(--purple); animation:pulse 1.5s ease-in-out infinite; }
+.status-badge.done    { background:#1ed76022; color:var(--green); }
+.status-badge.error   { background:#ff4d6a22; color:var(--red); }
+
+.jc-counts { font-size: 11px; color: var(--dim); }
+
+.progress-track {
+  flex: 1;
+  height: 3px;
+  background: var(--bg3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--grad);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  box-shadow: 0 0 6px #a044ff80;
+}
+
+/* ─── Detail panel ─── */
+#detail-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.detail-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+.detail-empty-icon {
+  font-size: 48px;
+  line-height: 1;
+  background: var(--grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  opacity: 0.3;
+}
+.detail-empty p { font-size: 13px; color: var(--muted); }
+
+/* Detail header */
+#detail-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: linear-gradient(180deg, var(--bg2) 0%, transparent 100%);
+}
+.dh-art {
+  width: 48px; height: 48px; flex-shrink: 0;
+  border-radius: var(--r-sm);
+  background: var(--grad);
+  display: flex; align-items:center; justify-content:center;
+  font-size: 20px;
+  box-shadow: 0 4px 16px #a044ff44;
+}
+.dh-meta { flex: 1; min-width:0; }
+.dh-title {
+  font-family: var(--font-head);
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--white);
+  white-space: nowrap; overflow:hidden; text-overflow:ellipsis;
+  letter-spacing: -0.2px;
+}
+.dh-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.detail-body {
+  flex: 1;
+  display: grid;
+  grid-template-rows: 1fr 160px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Track list */
+#track-list {
+  overflow-y: auto;
+}
+
+.track-row {
+  display: grid;
+  grid-template-columns: 36px 1fr 80px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+  animation: slideUp 0.15s ease;
+}
+.track-row:last-child { border-bottom:none; }
+.track-row:hover { background: var(--bg3); }
+
+.tr-num {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  font-feature-settings: 'tnum';
+}
+
+.tr-info { min-width:0; }
+.tr-title {
+  font-size: 13px; color: var(--text);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-weight: 500;
+}
+.tr-artist {
+  font-size: 11px; color: var(--dim); margin-top: 2px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+
+.tr-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.tr-status.pending     { color: var(--muted); }
+.tr-status.found       { color: var(--yellow); }
+.tr-status.downloading { color: var(--purple); }
+.tr-status.done        { color: var(--green); }
+.tr-status.failed      { color: var(--red); }
+
+/* Spinning indicator for downloading */
+.tr-status.downloading::before {
+  content: '';
+  width: 8px; height: 8px;
+  border: 1.5px solid #a044ff44;
+  border-top-color: var(--purple);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+/* Log panel */
+#log-panel {
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 10px 24px;
+}
+
+.log-line {
+  font-size: 11px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--dim);
+  font-family: 'SF Mono','Fira Code','Cascadia Code',monospace;
+}
+.log-line.ok     { color: var(--green); }
+.log-line.err    { color: var(--red); }
+.log-line.info   { color: var(--purple); }
+.log-line.lyrics { color: var(--blue); }
+.log-line.warn   { color: var(--yellow); }
+
+/* ═══════════════════════════════ SERVER LOG BAR ══════════════════════════ */
+#server-bar {
+  grid-column: 2 / 3;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 30px;
+  transition: height 0.25s cubic-bezier(.4,0,.2,1);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+#server-bar.open { height: 110px; }
+
+.server-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 20px;
+  font-size: 10px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+#server-bar.open .server-bar-head { border-color: var(--border); }
+.server-bar-head:hover { color: var(--dim); }
+.sb-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--green);
+  animation: pulse 2s ease-in-out infinite;
+  flex-shrink:0;
+}
+.sb-dot.off { background:var(--red); animation:none; }
+.sb-toggle { margin-left:auto; font-size:9px; }
+
+#server-log-scroll {
+  flex:1; overflow-y:auto; padding: 4px 20px; display:none;
+}
+#server-bar.open #server-log-scroll { display:block; }
+
+.sl-line {
+  font-size: 10px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--muted);
+  font-family: 'SF Mono','Fira Code',monospace;
+}
+.sl-line.access  { color: #4a6a4a; }
+.sl-line.warn    { color: var(--yellow); }
+.sl-line.err     { color: var(--red); }
+
+/* ═══════════════════════════════ TOAST ═══════════════════════════════════ */
+#toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: var(--r);
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--text);
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+  z-index: 9999;
+  max-width: 300px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px #00000060;
+}
+#toast.on { opacity:1; transform:translateY(0); }
+#toast.ok  { border-color:#1ed76044; color:var(--green); }
+#toast.err { border-color:#ff4d6a44; color:var(--red); }
+
+/* ═══════════════════════════════ ANIMATIONS ══════════════════════════════ */
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+@keyframes spin  { to{transform:rotate(360deg)} }
+@keyframes slideUp { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+@keyframes glow {
+  0%,100% { box-shadow: 0 0 10px #a044ff40; }
+  50%     { box-shadow: 0 0 20px #a044ff80; }
+}
+
+/* ═══════════════════════════════ MOBILE ══════════════════════════════════ */
+@media (max-width: 820px) {
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto auto;
+  }
+
+  #sidebar {
+    grid-row: 1;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow: visible;
+  }
+
+  #sidebar::before { display:none; }
+
+  .sidebar-top {
+    padding: 16px 16px 0;
+  }
+
+  .saved-section { display:none; }
+  .sidebar-divider { display:none; }
+
+  #main {
+    grid-row: 2;
+  }
+
+  #server-bar {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  /* Mobile nav */
+  #mobile-nav {
+    display: flex;
+    grid-row: 4;
+    border-top: 1px solid var(--border);
+    background: var(--sidebar);
+    height: calc(54px + var(--safe-b));
+    padding-bottom: var(--safe-b);
+  }
+
+  #content {
+    grid-template-columns: 1fr;
+    position: relative;
+  }
+
+  #jobs-panel,
+  #detail-panel {
+    position: absolute;
+    inset: 0;
+    transition: transform 0.28s cubic-bezier(.4,0,.2,1);
+    background: var(--bg);
+  }
+
+  #detail-panel { transform: translateX(100%); }
+  body.detail-view #jobs-panel  { transform: translateX(-100%); }
+  body.detail-view #detail-panel { transform: translateX(0); }
+
+  .track-row  { padding: 8px 16px; }
+  #log-panel  { padding: 8px 16px; }
+  #topbar     { padding: 14px 16px; }
+
+  #detail-header { padding: 12px 16px; }
+  #back-btn { display:flex !important; }
+}
+
+@media (min-width: 821px) {
+  #mobile-nav { display:none !important; }
+  #back-btn   { display:none !important; }
+}
+
+/* Mobile nav */
+#mobile-nav {
+  display: none;
+}
+.mnav-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-family: var(--font-body);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: color 0.15s;
+  padding: 6px 0;
+}
+.mnav-btn svg { width:20px; height:20px; }
+.mnav-btn.active { color: var(--purple); }
+
+/* Back button in detail header */
+#back-btn {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: var(--purple);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 0;
+  flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- ═══ SIDEBAR ═══════════════════════════════════════════════════════════ -->
+  <aside id="sidebar">
+    <div class="sidebar-top">
+      <a class="logo" href="/">
+        <div class="logo-mark">lb</div>
+        <div class="logo-text">lb<span>dl</span></div>
+      </a>
+
+      <!-- Source selector -->
+      <div class="source-tabs" role="tablist" aria-label="Playlist source">
+        <button class="source-tab active" id="tab-lb"  role="tab" aria-selected="true">ListenBrainz</button>
+        <button class="source-tab"        id="tab-inv" role="tab" aria-selected="false">Invidious</button>
+      </div>
+
+      <!-- Input form -->
+      <div class="input-area">
+        <div>
+          <div class="field-label" id="url-label">Playlist URL</div>
+          <div class="input-wrap">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            <input type="text" id="urlInput"
+                   placeholder="https://listenbrainz.org/playlist/…"
+                   autocomplete="off" autocorrect="off" spellcheck="false"
+                   aria-labelledby="url-label"/>
+          </div>
+        </div>
+        <div class="invidious-field" id="inv-instance-field">
+          <div class="field-label">Invidious Instance <span style="color:var(--border2);font-size:9px">(auto-detected)</span></div>
+          <div class="input-wrap">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <input type="text" id="invInstance" placeholder="https://inv.nadeko.net" autocomplete="off"/>
+          </div>
+        </div>
+        <button class="btn-download" id="submitBtn">
+          Download Playlist
+        </button>
+      </div>
+    </div>
+
+    <div class="sidebar-divider"></div>
+
+    <!-- Saved playlists -->
+    <div class="sidebar-section">
+      <div class="section-head">
+        <span class="section-title">Saved Playlists</span>
+        <span class="section-hint">auto-synced by cron</span>
+      </div>
+      <div class="saved-list" id="savedList"></div>
+    </div>
+
+    <!-- PWA install -->
+    <button id="installBtn" aria-label="Install as app">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Install App
+    </button>
+  </aside>
+
+  <!-- ═══ MAIN ══════════════════════════════════════════════════════════════ -->
+  <main id="main">
+    <div id="topbar">
+      <div>
+        <div class="topbar-title">Downloads</div>
+        <div class="topbar-sub" id="topbar-sub">Select a job to view progress</div>
+      </div>
+      <div class="topbar-right">
+        <div class="queue-badge" id="queue-badge">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Downloading…
+        </div>
+      </div>
+    </div>
+
+    <div id="content">
+      <!-- Jobs list -->
+      <div id="jobs-panel">
+        <div class="jobs-header">Recent Jobs</div>
+        <div id="job-list"></div>
+      </div>
+
+      <!-- Job detail -->
+      <div id="detail-panel">
+        <div class="detail-empty" id="detail-empty">
+          <div class="detail-empty-icon">♫</div>
+          <p>Select a job or start a new download</p>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ═══ SERVER LOG ═══════════════════════════════════════════════════════ -->
+  <div id="server-bar">
+    <div class="server-bar-head" id="sbHead">
+      <div class="sb-dot" id="sbDot"></div>
+      Server logs
+      <span class="sb-toggle" id="sbToggle">▲ expand</span>
+    </div>
+    <div id="server-log-scroll"></div>
+  </div>
+
+  <!-- ═══ MOBILE NAV ════════════════════════════════════════════════════════ -->
+  <nav id="mobile-nav" aria-label="Navigation">
+    <button class="mnav-btn active" id="mnav-jobs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      Jobs
+    </button>
+    <button class="mnav-btn" id="mnav-detail">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg>
+      Detail
+    </button>
+    <button class="mnav-btn" id="mnav-logs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Logs
+    </button>
+  </nav>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════
+const S = {
+  jobs:      {},   // jobId → job object
+  activeJob: null,
+  sockets:   {},   // jobId → WebSocket
+  source:    'listenbrainz',
+  invDefault: '',
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════
+const $  = id => document.getElementById(id)
+const mobile = () => window.innerWidth <= 820
+
+function wsProto() { return location.protocol === 'https:' ? 'wss' : 'ws' }
+function wsUrl(p) { return `${wsProto()}://${location.host}${p}` }
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+
+let _toastTimer
+function toast(msg, type = '') {
+  const t = $('toast')
+  t.textContent = msg
+  t.className = 'on' + (type ? ' '+type : '')
+  clearTimeout(_toastTimer)
+  _toastTimer = setTimeout(() => t.className = '', 3400)
+}
+
+// Load config from server
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config')
+    const cfg = await r.json()
+    S.invDefault = cfg.invidious_instance || ''
+    $('invInstance').placeholder = S.invDefault || 'https://inv.nadeko.net'
+  } catch {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SOURCE TABS
+// ═══════════════════════════════════════════════════════════════════════════
+function setSource(src) {
+  S.source = src
+  $('tab-lb').classList.toggle('active', src === 'listenbrainz')
+  $('tab-inv').classList.toggle('active', src === 'invidious')
+  $('tab-lb').setAttribute('aria-selected', src === 'listenbrainz')
+  $('tab-inv').setAttribute('aria-selected', src === 'invidious')
+  $('inv-instance-field').classList.toggle('visible', src === 'invidious')
+
+  if (src === 'listenbrainz') {
+    $('urlInput').placeholder = 'https://listenbrainz.org/playlist/…'
+  } else {
+    $('urlInput').placeholder = 'https://youtu.be/playlist?list=PL… or Invidious URL'
+  }
+  $('urlInput').value = ''
+  $('urlInput').focus()
+}
+
+$('tab-lb').addEventListener('click',  () => setSource('listenbrainz'))
+$('tab-inv').addEventListener('click', () => setSource('invidious'))
+
+// Auto-detect source when URL is pasted
+$('urlInput').addEventListener('input', () => {
+  const v = $('urlInput').value.trim()
+  if (!v) return
+  try {
+    const u = new URL(v)
+    const host = u.hostname.replace(/^www\./, '')
+    if (host === 'listenbrainz.org') {
+      setSource('listenbrainz')
+    } else if (u.searchParams.has('list')) {
+      setSource('invidious')
+    }
+  } catch {}
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUBMIT
+// ═══════════════════════════════════════════════════════════════════════════
+async function submitJob() {
+  const url = $('urlInput').value.trim()
+  if (!url) return
+  const btn = $('submitBtn')
+  btn.disabled = true
+  btn.textContent = 'Starting…'
+
+  try {
+    const body = { playlist_url: url }
+    if (S.source === 'invidious') {
+      const inst = $('invInstance').value.trim()
+      if (inst) body.invidious_instance = inst
+    }
+
+    const r = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await r.json()
+    if (data.error) { toast(data.error, 'err'); return }
+
+    $('urlInput').value = ''
+    initJob(data.job_id, data.source || S.source)
+    connectJobWS(data.job_id)
+    if (mobile()) showView('detail')
+  } catch {
+    toast('Network error — is the server running?', 'err')
+  } finally {
+    btn.disabled = false
+    btn.textContent = 'Download Playlist'
+  }
+}
+
+$('submitBtn').addEventListener('click', submitJob)
+$('urlInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitJob() })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// JOB STATE
+// ═══════════════════════════════════════════════════════════════════════════
+function initJob(jobId, source) {
+  S.jobs[jobId] = { id:jobId, status:'queued', source:source||'listenbrainz',
+                    playlist_name:'Loading…', tracks:[], logs:[] }
+  renderCard(jobId)
+  selectJob(jobId)
+}
+
+function connectJobWS(jobId) {
+  if (S.sockets[jobId]) { try { S.sockets[jobId].close() } catch {} }
+  const ws = new WebSocket(wsUrl(`/ws/${jobId}`))
+  S.sockets[jobId] = ws
+  ws.onmessage = e => { try { handleEvent(jobId, JSON.parse(e.data)) } catch {} }
+  ws.onerror = () => ws.close()
+}
+
+function handleEvent(jobId, evt) {
+  const job = S.jobs[jobId]
+  if (!job) return
+
+  switch (evt.type) {
+    case 'state':
+      Object.assign(job, {
+        status: evt.status,
+        playlist_name: evt.playlist_name || job.playlist_name,
+        tracks: evt.tracks || [],
+        logs:   evt.logs   || [],
+        source: evt.source || job.source,
+      })
+      if (S.activeJob === jobId) renderDetail(jobId)
+      break
+
+    case 'playlist_info':
+      job.playlist_name = evt.name
+      if (evt.source) job.source = evt.source
+      break
+
+    case 'track_start':
+      if (!job.tracks[evt.index])
+        job.tracks[evt.index] = { title:evt.title, artist:evt.artist, status:'pending' }
+      job.tracks[evt.index].status = 'found'
+      break
+
+    case 'track_downloading':
+      if (job.tracks[evt.index]) job.tracks[evt.index].status = 'downloading'
+      break
+
+    case 'track_done':
+      if (job.tracks[evt.index]) {
+        job.tracks[evt.index].status = evt.status
+        job.tracks[evt.index].error  = evt.error
+      }
+      break
+
+    case 'log':
+      job.logs.push(evt.msg)
+      if (S.activeJob === jobId) appendLog(evt.msg)
+      break
+
+    case 'job_done':
+      job.status = 'done'
+      loadSaved()
+      toast(`✓ "${job.playlist_name}" complete`, 'ok')
+      $('queue-badge').classList.remove('show')
+      break
+
+    case 'error':
+      job.status = 'error'
+      job.logs.push('ERROR: ' + evt.msg)
+      toast('Job error: ' + evt.msg, 'err')
+      break
+  }
+
+  renderCard(jobId)
+  updateTopbar()
+
+  if (S.activeJob === jobId && evt.type !== 'log' && evt.type !== 'state') {
+    updateTrackList(jobId)
+    updateDetailHeader(jobId)
+  }
+
+  if (job.status === 'running') $('queue-badge').classList.add('show')
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RENDER — job card
+// ═══════════════════════════════════════════════════════════════════════════
+function renderCard(jobId) {
+  const job  = S.jobs[jobId]
+  const list = $('job-list')
+  let card   = list.querySelector(`[data-jid="${jobId}"]`)
+
+  const done  = job.tracks.filter(t => t.status==='done').length
+  const total = job.tracks.length
+  const pct   = total ? Math.round(done/total*100) : 0
+  const srcCls = job.source === 'invidious' ? 'inv' : 'lb'
+  const srcLabel = job.source === 'invidious' ? '▶ Invidious' : '♬ ListenBrainz'
+
+  if (!card) {
+    card = document.createElement('div')
+    card.className = 'job-card'
+    card.dataset.jid = jobId
+    card.addEventListener('click', () => { selectJob(jobId); if (mobile()) showView('detail') })
+    list.prepend(card)
+  }
+
+  card.classList.toggle('active', S.activeJob === jobId)
+  card.innerHTML = `
+    <div class="jc-source">
+      <span class="jc-source-badge ${srcCls}">${srcLabel}</span>
+      <span class="status-badge ${job.status}">${job.status}</span>
+    </div>
+    <div class="jc-name">${esc(job.playlist_name)}</div>
+    <div class="jc-footer">
+      ${total ? `<span class="jc-counts">${done}/${total}</span>` : ''}
+      <div class="progress-track">
+        <div class="progress-fill" style="width:${pct}%"></div>
+      </div>
+    </div>
+  `
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RENDER — detail
+// ═══════════════════════════════════════════════════════════════════════════
+function selectJob(jobId) {
+  S.activeJob = jobId
+  document.querySelectorAll('.job-card').forEach(c =>
+    c.classList.toggle('active', c.dataset.jid === jobId))
+  renderDetail(jobId)
+}
+
+const ICONS = { pending:'·', found:'→', downloading:'', done:'✓', failed:'✗' }
+
+function renderDetail(jobId) {
+  const job  = S.jobs[jobId]
+  const panel = $('detail-panel')
+
+  const backBtn = `<button id="back-btn" aria-label="Back to jobs">← Back</button>`
+
+  panel.innerHTML = `
+    ${backBtn}
+    <div id="detail-header">
+      <div class="dh-art">${job.source==='invidious' ? '▶' : '♬'}</div>
+      <div class="dh-meta">
+        <div class="dh-title">${esc(job.playlist_name)}</div>
+        <div class="dh-sub" id="dh-sub-inner">
+          <span class="status-badge ${job.status}">${job.status}</span>
+          <span id="dh-counts"></span>
+        </div>
+      </div>
+    </div>
+    <div class="detail-body">
+      <div id="track-list"></div>
+      <div id="log-panel"></div>
+    </div>
+  `
+
+  $('back-btn')?.addEventListener('click', () => {
+    showView('jobs')
+  })
+
+  updateDetailHeader(jobId)
+  updateTrackList(jobId)
+  const lp = $('log-panel')
+  if (lp) { lp.innerHTML = buildLogs(job.logs); lp.scrollTop = lp.scrollHeight }
+}
+
+function buildTrackRows(job) {
+  if (!job.tracks.length)
+    return `<div style="padding:32px 24px;color:var(--muted);font-size:12px;">Loading tracks…</div>`
+  return job.tracks.map((t, i) => `
+    <div class="track-row">
+      <div class="tr-num">${i+1}</div>
+      <div class="tr-info">
+        <div class="tr-title">${esc(t.title)}</div>
+        ${t.artist ? `<div class="tr-artist">${esc(t.artist)}</div>` : ''}
+      </div>
+      <div class="tr-status ${t.status}" title="${esc(t.error||'')}">
+        ${t.status === 'downloading' ? '' : esc(ICONS[t.status]||'·')}
+        ${t.status !== 'downloading' ? `<span>${esc(ICONS[t.status]||'·')}</span>` : ''}
+      </div>
+    </div>
+  `).join('')
+}
+
+// Better track row builder — avoids double-icon issue
+function buildTrackRowsClean(job) {
+  if (!job.tracks.length)
+    return `<div style="padding:32px 24px;color:var(--muted);font-size:12px;">Loading tracks…</div>`
+  return job.tracks.map((t, i) => {
+    const icon = t.status === 'downloading' ? '' : (ICONS[t.status] || '·')
+    return `<div class="track-row">
+      <div class="tr-num">${i+1}</div>
+      <div class="tr-info">
+        <div class="tr-title">${esc(t.title)}</div>
+        ${t.artist ? `<div class="tr-artist">${esc(t.artist)}</div>` : ''}
+      </div>
+      <div class="tr-status ${t.status}" title="${esc(t.error||'')}">${icon}</div>
+    </div>`
+  }).join('')
+}
+
+function buildLogs(logs) {
+  return logs.map(l => {
+    let c = ''
+    if (l.includes('✓') || l.includes('Finished')) c='ok'
+    else if (l.includes('✗') || /^error/i.test(l)) c='err'
+    else if (l.includes('Fetching') || l.match(/^\[\d/)) c='info'
+    else if (l.includes('♪')) c='lyrics'
+    else if (/warning|warn/i.test(l)) c='warn'
+    return `<div class="log-line ${c}">${esc(l)}</div>`
+  }).join('')
+}
+
+function appendLog(msg) {
+  const lp = $('log-panel')
+  if (!lp) return
+  let c = ''
+  if (msg.includes('✓') || msg.includes('Finished')) c='ok'
+  else if (msg.includes('✗') || /^error/i.test(msg)) c='err'
+  else if (msg.includes('Fetching') || msg.match(/^\[\d/)) c='info'
+  else if (msg.includes('♪')) c='lyrics'
+  else if (/warning|warn/i.test(msg)) c='warn'
+  const d = document.createElement('div')
+  d.className = 'log-line ' + c
+  d.textContent = msg
+  lp.appendChild(d)
+  while (lp.children.length > 500) lp.removeChild(lp.firstChild)
+  lp.scrollTop = lp.scrollHeight
+}
+
+function updateTrackList(jobId) {
+  const tl = $('track-list')
+  if (tl) tl.innerHTML = buildTrackRowsClean(S.jobs[jobId])
+}
+
+function updateDetailHeader(jobId) {
+  const job  = S.jobs[jobId]
+  const done = job.tracks.filter(t=>t.status==='done').length
+  const fail = job.tracks.filter(t=>t.status==='failed').length
+  const tot  = job.tracks.length
+
+  const dhs = document.querySelector('#detail-header .dh-sub')
+  if (dhs) dhs.innerHTML = `
+    <span class="status-badge ${job.status}">${job.status}</span>
+    ${tot ? `<span style="font-size:11px;color:var(--dim)">${done}/${tot}${fail?` · ${fail} failed`:''}</span>` : ''}
+  `
+}
+
+function updateTopbar() {
+  const running = Object.values(S.jobs).filter(j=>j.status==='running')
+  const sub = running.length
+    ? `Downloading: ${running.map(j=>j.playlist_name).join(', ')}`
+    : S.activeJob ? `Viewing: ${S.jobs[S.activeJob]?.playlist_name||''}` : 'Select a job to view progress'
+  $('topbar-sub').textContent = sub
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SAVED PLAYLISTS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadSaved() {
+  try {
+    const list = await (await fetch('/api/playlists')).json()
+    const c = $('savedList')
+    if (!list.length) {
+      c.innerHTML = '<div class="saved-empty">No playlists yet — they\'re saved automatically after each download.</div>'
+      return
+    }
+    c.innerHTML = ''
+    list.forEach(p => {
+      const src = p.source || 'listenbrainz'
+      const iconCls = src === 'invidious' ? 'inv' : 'lb'
+      const iconChar = src === 'invidious' ? '▶' : '♬'
+
+      const item = document.createElement('div')
+      item.className = 'saved-item'
+      item.innerHTML = `
+        <div class="saved-icon ${iconCls}">${iconChar}</div>
+        <div class="saved-name" title="${esc(p.url)}">${esc(p.name)}</div>
+        <div class="saved-actions">
+          <button class="saved-btn run" title="Download now">▶</button>
+          <button class="saved-btn del" title="Remove">×</button>
+        </div>
+      `
+      item.querySelector('.run').addEventListener('click', e => { e.stopPropagation(); runSaved(p.url, src) })
+      item.querySelector('.del').addEventListener('click', e => { e.stopPropagation(); deleteSaved(p.url) })
+      item.addEventListener('click', () => runSaved(p.url, src))
+      c.appendChild(item)
+    })
+  } catch {}
+}
+
+async function runSaved(url, src) {
+  const parsed = new URL(url)
+  const host = parsed.hostname.replace(/^www\./, '')
+  if (host === 'listenbrainz.org') setSource('listenbrainz')
+  else if (parsed.searchParams.has('list')) setSource('invidious')
+  $('urlInput').value = url
+  await submitJob()
+}
+
+async function deleteSaved(url) {
+  try {
+    await fetch('/api/playlists', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+    loadSaved()
+    toast('Removed from saved playlists')
+  } catch { toast('Failed to remove', 'err') }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SERVER LOG WebSocket
+// ═══════════════════════════════════════════════════════════════════════════
+;(function connectServerLogs() {
+  const ws = new WebSocket(wsUrl('/ws/server-logs'))
+  const dot = $('sbDot')
+
+  ws.onopen  = () => dot.className = 'sb-dot'
+  ws.onclose = () => {
+    dot.className = 'sb-dot off'
+    setTimeout(connectServerLogs, 3000)
+  }
+  ws.onerror = () => ws.close()
+  ws.onmessage = e => {
+    try {
+      const evt = JSON.parse(e.data)
+      if (evt.type !== 'server_log') return
+      const sc = $('server-log-scroll')
+      const d  = document.createElement('div')
+      d.className = 'sl-line'
+      if (evt.msg.includes('HTTP/1')) d.classList.add('access')
+      else if (/warning/i.test(evt.msg)) d.classList.add('warn')
+      else if (/error/i.test(evt.msg))   d.classList.add('err')
+      d.textContent = evt.msg
+      sc.appendChild(d)
+      while (sc.children.length > 300) sc.removeChild(sc.firstChild)
+      sc.scrollTop = sc.scrollHeight
+    } catch {}
+  }
+})()
+
+// Server bar toggle
+$('sbHead').addEventListener('click', () => {
+  const bar = $('server-bar')
+  bar.classList.toggle('open')
+  $('sbToggle').textContent = bar.classList.contains('open') ? '▼ collapse' : '▲ expand'
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MOBILE NAVIGATION
+// ═══════════════════════════════════════════════════════════════════════════
+function showView(view) {
+  const body = document.body
+  if (view === 'detail') {
+    body.classList.add('detail-view')
+    $('mnav-jobs').classList.remove('active')
+    $('mnav-detail').classList.add('active')
+    $('mnav-logs').classList.remove('active')
+  } else if (view === 'jobs') {
+    body.classList.remove('detail-view')
+    $('mnav-jobs').classList.add('active')
+    $('mnav-detail').classList.remove('active')
+    $('mnav-logs').classList.remove('active')
+    const bar = $('server-bar')
+    bar.classList.remove('open')
+    $('sbToggle').textContent = '▲ expand'
+  } else if (view === 'logs') {
+    body.classList.remove('detail-view')
+    $('mnav-jobs').classList.remove('active')
+    $('mnav-detail').classList.remove('active')
+    $('mnav-logs').classList.add('active')
+    const bar = $('server-bar')
+    bar.classList.add('open')
+    $('sbToggle').textContent = '▼ collapse'
+  }
+}
+
+$('mnav-jobs').addEventListener('click',   () => showView('jobs'))
+$('mnav-detail').addEventListener('click', () => {
+  if (S.activeJob) showView('detail')
+  else toast('No job selected yet')
+})
+$('mnav-logs').addEventListener('click', () => showView('logs'))
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PWA
+// ═══════════════════════════════════════════════════════════════════════════
+let _installPrompt = null
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault()
+  _installPrompt = e
+  $('installBtn').classList.add('show')
+})
+$('installBtn').addEventListener('click', async () => {
+  if (!_installPrompt) return
+  _installPrompt.prompt()
+  const { outcome } = await _installPrompt.userChoice
+  if (outcome === 'accepted') { $('installBtn').classList.remove('show'); _installPrompt = null }
+})
+window.addEventListener('appinstalled', () => {
+  $('installBtn').classList.remove('show'); _installPrompt = null
+})
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/static/sw.js', { scope:'/' })
+    .then(r => console.log('SW:', r.scope))
+    .catch(e => console.warn('SW fail:', e))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════
+loadConfig()
+loadSaved()
+</script>
+</body>
+</html>

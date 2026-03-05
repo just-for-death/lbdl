@@ -1,0 +1,18 @@
+services:
+  lbdl:
+    build: .
+    container_name: lbdl
+    user: 0:0
+    ports:
+      - "8032:8000"
+    environment:
+      LBDL_SCHEDULER_CRON:     "0 */2 * * *"  # check for new tracks every 2 hours
+      LBDL_TZ:                 UTC
+      LBDL_AUDIO_FORMAT:       opus             # opus | mp3 | flac
+      LBDL_AUDIO_QUALITY:      "0"              # VBR 0–10 (0 = best)
+      LBDL_LB_TOKEN:           ""               # ListenBrainz token for private playlists
+      LBDL_INVIDIOUS_INSTANCE: "https://inv.nadeko.net"  # fallback for YouTube URLs
+    volumes:
+      - ./config:/app/config   # playlists.json + optional cookies.txt
+      - ./music:/app/music     # downloaded music + _Playlists/
+    restart: unless-stopped

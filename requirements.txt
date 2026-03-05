@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+requests
+ytmusicapi
+yt-dlp
+mediafile
+pathvalidate
+unidecode
+syncedlyrics

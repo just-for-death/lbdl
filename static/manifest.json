@@ -1,0 +1,20 @@
+{
+  "name": "lbdl — Playlist Downloader",
+  "short_name": "lbdl",
+  "description": "Download ListenBrainz & Invidious playlists as organised audio files with lyrics",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0d18",
+  "theme_color": "#a044ff",
+  "orientation": "any",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "categories": ["music", "utilities"],
+  "screenshots": [],
+  "share_target": {
+    "action": "/",
+    "method": "GET",
+    "params": { "url": "url" }
+  }
+}
