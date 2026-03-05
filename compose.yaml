@@ -6,13 +6,38 @@ services:
     ports:
       - "8032:8000"
     environment:
-      LBDL_SCHEDULER_CRON:     "0 */2 * * *"  # check for new tracks every 2 hours
+      LBDL_SCHEDULER_CRON:     "0 */2 * * *"
       LBDL_TZ:                 UTC
-      LBDL_AUDIO_FORMAT:       opus             # opus | mp3 | flac
-      LBDL_AUDIO_QUALITY:      "0"              # VBR 0–10 (0 = best)
-      LBDL_LB_TOKEN:           ""               # ListenBrainz token for private playlists
-      LBDL_INVIDIOUS_INSTANCE: "https://inv.nadeko.net"  # fallback for YouTube URLs
+      LBDL_AUDIO_FORMAT:       opus
+      LBDL_AUDIO_QUALITY:      "0"
+      LBDL_LB_TOKEN:           ""
+      LBDL_INVIDIOUS_INSTANCE: "https://inv.nadeko.net"
+      LBDL_LOG_LEVEL:          INFO     # DEBUG | INFO | WARNING | ERROR
+      LBDL_LOG_FORMAT:         json     # json = Dozzle-parseable | text = human-readable
     volumes:
-      - ./config:/app/config   # playlists.json + optional cookies.txt
-      - ./music:/app/music     # downloaded music + _Playlists/
+      - ./config:/app/config
+      - ./music:/app/music
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      # Dozzle metadata — shows up in the Dozzle UI
+      dozzle.name:        "lbdl"
+      dozzle.description: "ListenBrainz & Invidious playlist downloader"
+      dozzle.group:       "media"
+      dozzle.icon:        "https://raw.githubusercontent.com/YOUR_USERNAME/lbdl/main/static/icon.svg"
+
+  # Optional: uncomment to run Dozzle alongside lbdl
+  # dozzle:
+  #   image: amir20/dozzle:latest
+  #   container_name: dozzle
+  #   ports:
+  #     - "9999:8080"
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   environment:
+  #     DOZZLE_FILTER: "name=lbdl"
+  #   restart: unless-stopped

@@ -12,8 +12,13 @@
 <link rel="manifest" href="/static/manifest.json"/>
 <link rel="icon" type="image/svg+xml" href="/static/icon.svg"/>
 <link rel="apple-touch-icon" href="/static/icon.svg"/>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<!-- Fonts loaded with font-display:swap + preconnect so they never block render.
+     The SW caches them after first load so the app works offline. -->
+<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap"></noscript>
 <style>
 /* ═══════════════════════════════ TOKENS ══════════════════════════════════ */
 :root {
@@ -296,6 +301,48 @@ input[type="text"]::placeholder { color: var(--muted); }
   display: flex; align-items:center; justify-content:center;
   font-size: 12px;
 }
+/* Saved playlist thumbnail */
+.saved-thumb {
+  width: 40px; height: 40px; flex-shrink: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg3);
+  display: flex; align-items:center; justify-content:center;
+  font-size: 14px;
+}
+.saved-thumb img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.saved-thumb .thumb-fallback {
+  position: absolute; inset:0;
+  display: flex; align-items:center; justify-content:center;
+  font-size: 14px;
+}
+/* overlay shown when playlist is actively downloading */
+.saved-thumb .thumb-overlay {
+  position: absolute; inset:0;
+  background: #00000088;
+  display: flex; align-items:center; justify-content:center;
+  opacity: 0;
+  transition: opacity 0.2s;
+  border-radius: 6px;
+}
+.saved-thumb.downloading .thumb-overlay { opacity: 1; }
+.saved-thumb.done .thumb-overlay { opacity: 1; background: #1ed76044; }
+
+/* spinning ring for active download */
+.dl-ring {
+  width: 18px; height: 18px;
+  border: 2px solid #ffffff44;
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+.done-check { color:#1ed760; font-size:16px; line-height:1; }
+
 .saved-icon.lb  { background: linear-gradient(135deg,#eb743b22,#eb743b44); color:#eb743b; }
 .saved-icon.yt  { background: linear-gradient(135deg,#ff000018,#ff222230); color:#ff4444; }
 .saved-icon.inv { background: linear-gradient(135deg,#4da6ff22,#4da6ff44); color:#4da6ff; }
@@ -683,6 +730,7 @@ input[type="text"]::placeholder { color: var(--muted); }
 .log-line.warn   { color: var(--yellow); }
 
 /* ═══════════════════════════════ SERVER LOG BAR ══════════════════════════ */
+/* ═══════════════════════════════ SERVER LOG BAR ══════════════════════════ */
 #server-bar {
   grid-column: 2 / 3;
   background: var(--bg2);
@@ -693,14 +741,16 @@ input[type="text"]::placeholder { color: var(--muted); }
   transition: height 0.25s cubic-bezier(.4,0,.2,1);
   flex-shrink: 0;
   overflow: hidden;
+  position: relative;
 }
-#server-bar.open { height: 110px; }
+#server-bar.open { height: 200px; }
 
 .server-bar-head {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 7px 20px;
+  gap: 8px;
+  padding: 0 16px;
+  height: 30px;
   font-size: 10px;
   letter-spacing: 0.10em;
   text-transform: uppercase;
@@ -709,37 +759,245 @@ input[type="text"]::placeholder { color: var(--muted); }
   user-select: none;
   flex-shrink: 0;
   border-bottom: 1px solid transparent;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, background 0.12s;
 }
 #server-bar.open .server-bar-head { border-color: var(--border); }
-.server-bar-head:hover { color: var(--dim); }
+.server-bar-head:hover { background: #ffffff04; }
+
 .sb-dot {
-  width: 5px; height: 5px; border-radius: 50%;
+  width: 6px; height: 6px; border-radius: 50%;
   background: var(--green);
   animation: pulse 2s ease-in-out infinite;
-  flex-shrink:0;
+  flex-shrink: 0;
+  box-shadow: 0 0 4px var(--green);
 }
-.sb-dot.off { background:var(--red); animation:none; }
-.sb-toggle { margin-left:auto; font-size:9px; }
+.sb-dot.off { background: var(--red); animation: none; box-shadow: none; }
 
-#server-log-scroll {
-  flex:1; overflow-y:auto; padding: 4px 20px; display:none;
+.sb-stats {
+  color: var(--border2);
+  font-size: 9px;
+  margin-left: 2px;
 }
-#server-bar.open #server-log-scroll { display:block; }
 
-.sl-line {
-  font-size: 10px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-all;
+/* Level filter pills */
+.sb-filters {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  margin-right: 10px;
+}
+.sb-filter {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  text-transform: uppercase;
   color: var(--muted);
-  font-family: 'SF Mono','Fira Code',monospace;
 }
-.sl-line.access  { color: #4a6a4a; }
-.sl-line.warn    { color: var(--yellow); }
-.sl-line.err     { color: var(--red); }
+.sb-filter:hover { border-color: var(--border2); color: var(--dim); }
+.sb-filter.active-DEBUG    { background:#4da6ff18; border-color:#4da6ff44; color:var(--blue); }
+.sb-filter.active-INFO     { background:#1ed76018; border-color:#1ed76044; color:var(--green); }
+.sb-filter.active-WARNING  { background:#ffb80018; border-color:#ffb80044; color:var(--yellow); }
+.sb-filter.active-ERROR    { background:#ff4d6a18; border-color:#ff4d6a44; color:var(--red); }
+.sb-filter.active-CRITICAL { background:#ee10b018; border-color:#ee10b044; color:var(--pink); }
 
-/* ═══════════════════════════════ TOAST ═══════════════════════════════════ */
+.sb-clear {
+  background: none; border: none;
+  color: var(--muted); cursor: pointer;
+  font-family: var(--font-body); font-size: 9px;
+  padding: 2px 6px; border-radius: 4px;
+  transition: color 0.12s, background 0.12s;
+}
+.sb-clear:hover { color: var(--red); background: #ff4d6a12; }
+
+.sb-toggle { font-size: 9px; color: var(--muted); flex-shrink: 0; }
+
+/* Scroll area */
+#server-log-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+  display: none;
+  font-family: 'SF Mono','Fira Code','Cascadia Code','Consolas',monospace;
+}
+#server-bar.open #server-log-scroll { display: block; }
+
+/* Each log row */
+.sl-row {
+  display: grid;
+  grid-template-columns: 58px 62px 140px 1fr;
+  gap: 0;
+  padding: 1px 16px;
+  border-radius: 3px;
+  transition: background 0.08s;
+  cursor: default;
+}
+.sl-row:hover { background: #ffffff06; }
+.sl-row.hidden { display: none; }
+
+.sl-time   { font-size: 9px; color: var(--muted); line-height: 1.7; flex-shrink:0; }
+.sl-badge  {
+  font-size: 9px; font-weight: 700; line-height: 1.7;
+  flex-shrink: 0; padding: 0 4px;
+  border-radius: 3px;
+}
+.sl-logger { font-size: 9px; color: var(--muted); line-height: 1.7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sl-msg    { font-size: 10px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
+
+/* Level colours */
+.sl-DEBUG    .sl-badge { color: var(--blue);   background: #4da6ff12; }
+.sl-DEBUG    .sl-msg   { color: var(--muted); }
+.sl-INFO     .sl-badge { color: var(--green);  background: #1ed76012; }
+.sl-INFO     .sl-msg   { color: var(--dim); }
+.sl-WARNING  .sl-badge { color: var(--yellow); background: #ffb80012; }
+.sl-WARNING  .sl-msg   { color: var(--yellow); }
+.sl-ERROR    .sl-badge { color: var(--red);    background: #ff4d6a12; }
+.sl-ERROR    .sl-msg   { color: var(--red); }
+.sl-CRITICAL .sl-badge { color: var(--pink);   background: #ee10b018; }
+.sl-CRITICAL .sl-msg   { color: var(--pink); font-weight: 600; }
+
+/* ═══════════════════════════════ SETTINGS MODAL ═════════════════════════ */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: #00000088;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 8000;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.2s;
+}
+.modal-overlay.open { opacity: 1; pointer-events: all; }
+
+.modal {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 14px;
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
+  box-shadow: 0 24px 64px #00000080;
+  transform: translateY(12px) scale(0.98);
+  transition: transform 0.22s cubic-bezier(.22,.68,0,1.2);
+}
+.modal-overlay.open .modal { transform: translateY(0) scale(1); }
+
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 24px 0;
+}
+.modal-title {
+  font-family: var(--font-head);
+  font-size: 17px; font-weight: 700;
+  color: var(--white);
+  letter-spacing: -0.2px;
+}
+.modal-close {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 20px; line-height: 1;
+  padding: 2px 6px; border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+.modal-close:hover { color: var(--text); background: var(--bg3); }
+
+.modal-body { padding: 20px 24px 24px; display: flex; flex-direction: column; gap: 20px; }
+
+.setting-group { display: flex; flex-direction: column; gap: 6px; }
+
+.setting-label {
+  font-size: 11px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.setting-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-top: -2px;
+}
+
+.setting-group input[type="text"],
+.setting-group input[type="url"],
+.setting-group input[type="password"] {
+  padding-left: 12px;
+}
+.setting-group input[type="text"]:focus,
+.setting-group input[type="url"]:focus,
+.setting-group input[type="password"]:focus {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 2px #a044ff22;
+}
+
+/* Format selector pills */
+.format-pills {
+  display: flex; gap: 6px;
+}
+.format-pill {
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: var(--r-sm);
+  color: var(--dim);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 8px 4px;
+  text-align: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.format-pill:hover { border-color: var(--purple); color: var(--text); }
+.format-pill.active {
+  background: var(--grad-soft);
+  border-color: var(--purple);
+  color: var(--purple);
+  box-shadow: 0 0 0 1px #a044ff22;
+}
+
+.modal-divider { height: 1px; background: var(--border); margin: 2px 0; }
+
+.btn-save {
+  width: 100%;
+  background: var(--grad);
+  border: none; border-radius: var(--r-sm);
+  color: #fff; cursor: pointer;
+  font-family: var(--font-head); font-size: 13px; font-weight: 600;
+  padding: 11px;
+  transition: opacity 0.15s;
+  box-shadow: 0 4px 14px #a044ff40;
+  margin-top: 4px;
+}
+.btn-save:hover { opacity: 0.88; }
+.btn-save:active { opacity: 0.75; }
+
+.settings-status {
+  font-size: 11px;
+  color: var(--green);
+  text-align: center;
+  height: 16px;
+  transition: opacity 0.3s;
+}
+
+/* Settings gear button */
+.gear-btn {
+  background: none; border: none;
+  color: var(--muted); cursor: pointer;
+  padding: 6px; border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+  display: flex; align-items: center; justify-content: center;
+}
+.gear-btn:hover { color: var(--text); background: var(--bg3); }
 #toast {
   position: fixed;
   bottom: 24px;
@@ -976,6 +1234,9 @@ input[type="text"]::placeholder { color: var(--muted); }
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           Downloading…
         </div>
+        <button class="gear-btn" id="settingsBtn" title="Settings" aria-label="Open settings">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
       </div>
     </div>
 
@@ -1001,7 +1262,16 @@ input[type="text"]::placeholder { color: var(--muted); }
     <div class="server-bar-head" id="sbHead">
       <div class="sb-dot" id="sbDot"></div>
       Server logs
-      <span class="sb-toggle" id="sbToggle">▲ expand</span>
+      <span class="sb-stats" id="sbStats"></span>
+      <div class="sb-filters" id="sbFilters">
+        <button class="sb-filter" data-level="DEBUG">DBG</button>
+        <button class="sb-filter" data-level="INFO">INF</button>
+        <button class="sb-filter" data-level="WARNING">WRN</button>
+        <button class="sb-filter" data-level="ERROR">ERR</button>
+        <button class="sb-filter" data-level="CRITICAL">CRT</button>
+        <button class="sb-clear" id="sbClear" title="Clear logs">✕</button>
+      </div>
+      <span class="sb-toggle" id="sbToggle">▲</span>
     </div>
     <div id="server-log-scroll"></div>
   </div>
@@ -1021,6 +1291,61 @@ input[type="text"]::placeholder { color: var(--muted); }
       Logs
     </button>
   </nav>
+</div>
+
+<!-- ═══ SETTINGS MODAL ════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="settingsOverlay" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+  <div class="modal" id="settingsModal">
+    <div class="modal-header">
+      <div class="modal-title" id="settingsTitle">Settings</div>
+      <button class="modal-close" id="settingsClose" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+
+      <!-- Audio Format -->
+      <div class="setting-group">
+        <div class="setting-label">Audio Format</div>
+        <div class="format-pills">
+          <button class="format-pill active" data-fmt="opus">Opus</button>
+          <button class="format-pill" data-fmt="mp3">MP3</button>
+          <button class="format-pill" data-fmt="flac">FLAC</button>
+          <button class="format-pill" data-fmt="m4a">M4A</button>
+        </div>
+        <div class="setting-desc">Opus is smallest at equal quality. FLAC for lossless archiving.</div>
+      </div>
+
+      <div class="modal-divider"></div>
+
+      <!-- Default Invidious Instance -->
+      <div class="setting-group">
+        <div class="setting-label">Default Invidious Instance</div>
+        <div class="input-wrap">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <input type="url" id="cfg-inv-instance" placeholder="https://inv.nadeko.net" autocomplete="off"/>
+        </div>
+        <div class="setting-desc">Used when a YouTube URL is submitted. Also pre-fills the Invidious tab.</div>
+      </div>
+
+      <div class="modal-divider"></div>
+
+      <!-- Gotify -->
+      <div class="setting-group">
+        <div class="setting-label">Gotify Notifications</div>
+        <div class="input-wrap" style="margin-bottom:6px">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <input type="url" id="cfg-gotify-url" placeholder="https://gotify.example.com" autocomplete="off"/>
+        </div>
+        <div class="input-wrap">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <input type="password" id="cfg-gotify-token" placeholder="App token" autocomplete="off"/>
+        </div>
+        <div class="setting-desc">Receive a push notification when a download finishes or fails.</div>
+      </div>
+
+      <div class="settings-status" id="settings-status"></div>
+      <button class="btn-save" id="saveSettingsBtn">Save Settings</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast" role="status" aria-live="polite"></div>
@@ -1059,15 +1384,79 @@ function toast(msg, type = '') {
   _toastTimer = setTimeout(() => t.className = '', 3400)
 }
 
-// Load config from server
-async function loadConfig() {
+// ═══════════════════════════════════════════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════════════════════════════════════════
+const FORMATS = ['opus','mp3','flac','m4a']
+let _currentFmt = 'opus'
+
+async function loadSettings() {
   try {
-    const r = await fetch('/api/config')
-    const cfg = await r.json()
+    const cfg = await (await fetch('/api/settings')).json()
+    _currentFmt = cfg.audio_format || 'opus'
+    $('cfg-inv-instance').value = cfg.invidious_instance || ''
+    $('cfg-gotify-url').value   = cfg.gotify_url   || ''
+    $('cfg-gotify-token').value = cfg.gotify_token || ''
+    setFormatPill(_currentFmt)
+    // Also pre-fill invidious instance placeholder
     S.invDefault = cfg.invidious_instance || ''
     $('invInstance').placeholder = S.invDefault || 'https://inv.nadeko.net'
+    $('ytInstance').placeholder  = S.invDefault || 'https://inv.nadeko.net'
   } catch {}
 }
+
+function setFormatPill(fmt) {
+  document.querySelectorAll('.format-pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.fmt === fmt)
+  })
+  _currentFmt = fmt
+}
+
+document.querySelectorAll('.format-pill').forEach(p => {
+  p.addEventListener('click', () => setFormatPill(p.dataset.fmt))
+})
+
+$('settingsBtn').addEventListener('click', () => {
+  $('settingsOverlay').classList.add('open')
+  loadSettings()
+})
+
+function closeSettings() {
+  $('settingsOverlay').classList.remove('open')
+  $('settings-status').textContent = ''
+}
+
+$('settingsClose').addEventListener('click', closeSettings)
+$('settingsOverlay').addEventListener('click', e => {
+  if (e.target === $('settingsOverlay')) closeSettings()
+})
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('settingsOverlay').classList.contains('open')) closeSettings()
+})
+
+$('saveSettingsBtn').addEventListener('click', async () => {
+  const body = {
+    audio_format:       _currentFmt,
+    invidious_instance: $('cfg-inv-instance').value.trim(),
+    gotify_url:         $('cfg-gotify-url').value.trim(),
+    gotify_token:       $('cfg-gotify-token').value.trim(),
+  }
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const d = await r.json()
+    if (d.error) { toast(d.error, 'err'); return }
+    $('settings-status').textContent = '✓ Saved'
+    S.invDefault = body.invidious_instance
+    $('invInstance').placeholder = S.invDefault || 'https://inv.nadeko.net'
+    $('ytInstance').placeholder  = S.invDefault || 'https://inv.nadeko.net'
+    setTimeout(() => { $('settings-status').textContent = '' }, 2500)
+    toast('Settings saved', 'ok')
+  } catch { toast('Failed to save settings', 'err') }
+})
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SOURCE TABS
@@ -1231,6 +1620,7 @@ function handleEvent(jobId, evt) {
       loadSaved()
       toast(`✓ "${job.playlist_name}" complete`, 'ok')
       $('queue-badge').classList.remove('show')
+      refreshSavedStates()
       break
 
     case 'error':
@@ -1242,6 +1632,7 @@ function handleEvent(jobId, evt) {
 
   renderCard(jobId)
   updateTopbar()
+  refreshSavedStates()
 
   if (S.activeJob === jobId && evt.type !== 'log' && evt.type !== 'state') {
     updateTrackList(jobId)
@@ -1426,8 +1817,58 @@ function updateTopbar() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SAVED PLAYLISTS
+// SAVED PLAYLISTS  (with thumbnails + live download state)
 // ═══════════════════════════════════════════════════════════════════════════
+function _savedItemState(url) {
+  for (const job of Object.values(S.jobs)) {
+    if (job.playlist_url === url) {
+      if (job.status === 'running') return 'downloading'
+      if (job.status === 'done')    return 'done'
+    }
+  }
+  return ''
+}
+
+function _thumbHtml(p) {
+  const src   = p.source || 'listenbrainz'
+  const icon  = src === 'listenbrainz' ? '♬' : '▶'
+  const fbCls = src === 'youtube' ? 'yt' : src === 'invidious' ? 'inv' : 'lb'
+  const state = _savedItemState(p.url)
+  const overlay = state === 'downloading'
+    ? `<div class="thumb-overlay"><div class="dl-ring"></div></div>`
+    : state === 'done'
+    ? `<div class="thumb-overlay"><div class="done-check">✓</div></div>`
+    : ''
+  if (p.thumbnail) {
+    return `<div class="saved-thumb ${state}">
+      <img src="${esc(p.thumbnail)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>
+      <div class="thumb-fallback saved-icon ${fbCls}" style="display:none">${icon}</div>
+      ${overlay}
+    </div>`
+  }
+  return `<div class="saved-thumb ${state}">
+    <div class="thumb-fallback saved-icon ${fbCls}">${icon}</div>
+    ${overlay}
+  </div>`
+}
+
+function refreshSavedStates() {
+  document.querySelectorAll('.saved-item[data-saved-url]').forEach(item => {
+    const state = _savedItemState(item.dataset.savedUrl)
+    const thumb = item.querySelector('.saved-thumb')
+    if (!thumb) return
+    thumb.className = 'saved-thumb ' + state
+    let ov = thumb.querySelector('.thumb-overlay')
+    if (state === 'downloading') {
+      if (!ov) { ov = document.createElement('div'); ov.className='thumb-overlay'; thumb.appendChild(ov) }
+      ov.innerHTML = '<div class="dl-ring"></div>'
+    } else if (state === 'done') {
+      if (!ov) { ov = document.createElement('div'); ov.className='thumb-overlay'; thumb.appendChild(ov) }
+      ov.innerHTML = '<div class="done-check">✓</div>'
+    } else if (ov) { ov.remove() }
+  })
+}
+
 async function loadSaved() {
   try {
     const list = await (await fetch('/api/playlists')).json()
@@ -1438,14 +1879,12 @@ async function loadSaved() {
     }
     c.innerHTML = ''
     list.forEach(p => {
-      const src = p.source || 'listenbrainz'
-      const iconCls  = src === 'youtube' ? 'yt' : src === 'invidious' ? 'inv' : 'lb'
-      const iconChar = src === 'listenbrainz' ? '♬' : '▶'
-
+      const src  = p.source || 'listenbrainz'
       const item = document.createElement('div')
       item.className = 'saved-item'
+      item.dataset.savedUrl = p.url
       item.innerHTML = `
-        <div class="saved-icon ${iconCls}">${iconChar}</div>
+        ${_thumbHtml(p)}
         <div class="saved-name" title="${esc(p.url)}">${esc(p.name)}</div>
         <div class="saved-actions">
           <button class="saved-btn run" title="Download now">▶</button>
@@ -1484,39 +1923,109 @@ async function deleteSaved(url) {
 // ═══════════════════════════════════════════════════════════════════════════
 // SERVER LOG WebSocket
 // ═══════════════════════════════════════════════════════════════════════════
-;(function connectServerLogs() {
-  const ws = new WebSocket(wsUrl('/ws/server-logs'))
+// ═══════════════════════════════════════════════════════════════════════════
+// SERVER LOG — structured, level-filterable
+// ═══════════════════════════════════════════════════════════════════════════
+const SL = {
+  rows:       [],      // { time, level, logger, message }
+  activeFilter: null,  // null = show all, or "INFO" etc.
+  total:      0,
+  errors:     0,
+}
+
+const LEVEL_ORDER = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 }
+
+function _slBadgeText(level) {
+  return { DEBUG:'DBG', INFO:'INF', WARNING:'WRN', ERROR:'ERR', CRITICAL:'CRT' }[level] || level.slice(0,3)
+}
+
+function _slRow(entry) {
+  const row = document.createElement('div')
+  row.className = `sl-row sl-${entry.level}`
+  if (SL.activeFilter && entry.level !== SL.activeFilter) row.classList.add('hidden')
+  row.innerHTML =
+    `<span class="sl-time">${esc(entry.time||'')}</span>` +
+    `<span class="sl-badge">${_slBadgeText(entry.level)}</span>` +
+    `<span class="sl-logger" title="${esc(entry.logger||'')}">${esc((entry.logger||'').replace(/^lbdl\.?/,''))}</span>` +
+    `<span class="sl-msg">${esc(entry.message||'')}</span>`
+  return row
+}
+
+function _slAppend(entry) {
+  SL.rows.push(entry)
+  SL.total++
+  if (entry.level === 'ERROR' || entry.level === 'CRITICAL') SL.errors++
+
+  const sc = $('server-log-scroll')
+  const atBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 40
+  sc.appendChild(_slRow(entry))
+  while (sc.children.length > 600) sc.removeChild(sc.firstChild)
+  if (atBottom) sc.scrollTop = sc.scrollHeight
+
+  // Update stats badge
+  const stats = $('sbStats')
+  if (stats) stats.textContent = SL.errors ? `${SL.errors} error${SL.errors>1?'s':''}` : ''
+}
+
+function _slSetFilter(level) {
+  SL.activeFilter = SL.activeFilter === level ? null : level
+  // Update pill states
+  document.querySelectorAll('.sb-filter').forEach(b => {
+    b.classList.toggle(`active-${b.dataset.level}`, b.dataset.level === SL.activeFilter)
+  })
+  // Show/hide existing rows
+  document.querySelectorAll('#server-log-scroll .sl-row').forEach(row => {
+    const rowLevel = [...row.classList].find(c => c.startsWith('sl-') && c !== 'sl-row')?.replace('sl-','')
+    row.classList.toggle('hidden', SL.activeFilter !== null && rowLevel !== SL.activeFilter)
+  })
+}
+
+// Wire up filter pills and clear button
+document.querySelectorAll('.sb-filter').forEach(b => {
+  b.addEventListener('click', e => { e.stopPropagation(); _slSetFilter(b.dataset.level) })
+})
+$('sbClear').addEventListener('click', e => {
+  e.stopPropagation()
+  SL.rows = []; SL.total = 0; SL.errors = 0
+  $('server-log-scroll').innerHTML = ''
+  const stats = $('sbStats'); if (stats) stats.textContent = ''
+})
+
+// WS connection with exponential back-off
+;(function connectServerLogs(attempt = 0) {
+  const ws  = new WebSocket(wsUrl('/ws/server-logs'))
   const dot = $('sbDot')
 
-  ws.onopen  = () => dot.className = 'sb-dot'
+  ws.onopen = () => {
+    dot.className = 'sb-dot'
+    attempt = 0
+  }
   ws.onclose = () => {
     dot.className = 'sb-dot off'
-    setTimeout(connectServerLogs, 3000)
+    const delay = Math.min(1000 * 2 ** attempt, 30000)
+    setTimeout(() => connectServerLogs(attempt + 1), delay)
   }
   ws.onerror = () => ws.close()
   ws.onmessage = e => {
     try {
       const evt = JSON.parse(e.data)
       if (evt.type !== 'server_log') return
-      const sc = $('server-log-scroll')
-      const d  = document.createElement('div')
-      d.className = 'sl-line'
-      if (evt.msg.includes('HTTP/1')) d.classList.add('access')
-      else if (/warning/i.test(evt.msg)) d.classList.add('warn')
-      else if (/error/i.test(evt.msg))   d.classList.add('err')
-      d.textContent = evt.msg
-      sc.appendChild(d)
-      while (sc.children.length > 300) sc.removeChild(sc.firstChild)
-      sc.scrollTop = sc.scrollHeight
+      _slAppend({
+        time:    evt.time    || new Date().toLocaleTimeString('en-GB', {hour12:false}),
+        level:   evt.level   || 'INFO',
+        logger:  evt.logger  || '',
+        message: evt.message || evt.msg || '',
+      })
     } catch {}
   }
 })()
 
-// Server bar toggle
-$('sbHead').addEventListener('click', () => {
+// Server bar toggle — click anywhere on the head bar except filter pills
+$('sbHead').addEventListener('click', e => {
+  if (e.target.closest('.sb-filters') || e.target.closest('.sb-clear')) return
   const bar = $('server-bar')
   bar.classList.toggle('open')
-  $('sbToggle').textContent = bar.classList.contains('open') ? '▼ collapse' : '▲ expand'
+  $('sbToggle').textContent = bar.classList.contains('open') ? '▼' : '▲'
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1524,6 +2033,7 @@ $('sbHead').addEventListener('click', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 function showView(view) {
   const body = document.body
+  const bar  = $('server-bar')
   if (view === 'detail') {
     body.classList.add('detail-view')
     $('mnav-jobs').classList.remove('active')
@@ -1534,17 +2044,15 @@ function showView(view) {
     $('mnav-jobs').classList.add('active')
     $('mnav-detail').classList.remove('active')
     $('mnav-logs').classList.remove('active')
-    const bar = $('server-bar')
     bar.classList.remove('open')
-    $('sbToggle').textContent = '▲ expand'
+    $('sbToggle').textContent = '▲'
   } else if (view === 'logs') {
     body.classList.remove('detail-view')
     $('mnav-jobs').classList.remove('active')
     $('mnav-detail').classList.remove('active')
     $('mnav-logs').classList.add('active')
-    const bar = $('server-bar')
     bar.classList.add('open')
-    $('sbToggle').textContent = '▼ collapse'
+    $('sbToggle').textContent = '▼'
   }
 }
 
@@ -1572,18 +2080,60 @@ $('installBtn').addEventListener('click', async () => {
 })
 window.addEventListener('appinstalled', () => {
   $('installBtn').classList.remove('show'); _installPrompt = null
+  toast('App installed ✓', 'ok')
 })
 
+// Handle share_target — when another app shares a URL to lbdl
+;(function handleShareTarget() {
+  const params = new URLSearchParams(location.search)
+  const shared = params.get('url') || params.get('text')
+  if (shared) {
+    try {
+      const u = new URL(shared.trim())
+      // auto-detect source and submit
+      $('urlInput').value = u.href
+      $('urlInput').dispatchEvent(new Event('input'))   // triggers auto-detect
+      setTimeout(() => submitJob(), 200)
+    } catch {}
+    // Clean the URL so refreshing doesn't re-trigger
+    history.replaceState({}, '', '/')
+  }
+})()
+
+// Online / offline indicator in the server log dot
+window.addEventListener('offline', () => toast('You are offline — live downloads paused', 'err'))
+window.addEventListener('online',  () => toast('Back online', 'ok'))
+
+// Service worker registration with update detection
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/static/sw.js', { scope:'/' })
-    .then(r => console.log('SW:', r.scope))
-    .catch(e => console.warn('SW fail:', e))
+  navigator.serviceWorker.register('/static/sw.js', { scope: '/' })
+    .then(reg => {
+      // Detect SW update available → prompt user to refresh
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            // New version available — show a non-intrusive toast with refresh action
+            const t = $('toast')
+            t.innerHTML = 'Update available — <button onclick="location.reload()" style="background:none;border:none;color:var(--purple);cursor:pointer;text-decoration:underline;font:inherit">refresh</button>'
+            t.className = 'on'
+            // Don't auto-dismiss — let user click refresh
+          }
+        })
+      })
+    })
+    .catch(e => console.warn('SW registration failed:', e))
+
+  // Tell new SW to skip waiting when user refreshes
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (document.visibilityState === 'hidden') location.reload()
+  })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════════════════════
-loadConfig()
+loadSettings()
 loadSaved()
 </script>
 </body>
