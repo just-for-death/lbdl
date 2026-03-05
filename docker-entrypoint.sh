@@ -25,5 +25,4 @@ exec uvicorn app.main:app \
     --port 8000 \
     --log-level "$(echo $LOG_LEVEL | tr '[:upper:]' '[:lower:]')" \
     --access-log \
-    --use-colors=false \
     --no-server-header
