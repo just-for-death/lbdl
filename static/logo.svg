@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0a0a0a"/>
+
+  <!-- Vinyl disc shadow -->
+  <ellipse cx="269" cy="223" rx="146" ry="146" fill="rgba(0,0,0,0.45)"/>
+
+  <!-- Vinyl disc body -->
+  <circle cx="256" cy="215" r="146" fill="#121110"/>
+
+  <!-- Groove rings -->
+  <circle cx="256" cy="215" r="90"  stroke="#231f1b" stroke-width="2.5" fill="none"/>
+  <circle cx="256" cy="215" r="67"  stroke="#231f1b" stroke-width="2"   fill="none"/>
+  <circle cx="256" cy="215" r="46"  stroke="#231f1b" stroke-width="1.5" fill="none"/>
+
+  <!-- Gold label -->
+  <circle cx="256" cy="215" r="49" fill="#d4a853"/>
+
+  <!-- Center hole -->
+  <circle cx="256" cy="215" r="14" fill="#0a0a0a"/>
+
+  <!-- Download arrow shaft -->
+  <rect x="239" y="348" width="34" height="58" rx="8" fill="#d4a853"/>
+
+  <!-- Arrowhead -->
+  <polygon points="185,390 327,390 256,436" fill="#d4a853"/>
+
+  <!-- Baseline bar -->
+  <rect x="186" y="448" width="140" height="20" rx="6" fill="#d4a853"/>
+</svg>

@@ -1,0 +1,62 @@
+# lbdl — Portainer Stack
+#
+# Replace every occurrence of:
+#   ustxforxdocker  → your Docker Hub username
+#   /your/music/path     → absolute path to your music library
+#   /your/config/path    → absolute path for settings/playlists/cookies
+#
+# Deploy in Portainer:  Stacks → Add Stack → paste this file → Deploy
+
+services:
+
+  lbdl-api:
+    image: ustxforxdocker/lbdl-api:latest
+    container_name: lbdl-api
+    ports:
+      - "8032:8032"
+    environment:
+      - LBDL_DATA_DIR=/app/music
+      - LBDL_CONFIG_DIR=/app/config
+      - LBDL_YTDLP_DIR=/app/config
+      - LBDL_AUDIO_FORMAT=opus
+      - LBDL_AUDIO_QUALITY=0
+      - LBDL_LB_TOKEN=
+      - LBDL_INVIDIOUS_INSTANCE=https://inv.nadeko.net
+      - LBDL_ACOUSTID_KEY=
+      - LBDL_TZ=UTC
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /your/music/path:/app/music
+      - /your/config/path:/app/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8032/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - lbdl-network
+    restart: unless-stopped
+
+  lbdl-sync:
+    image: ustxforxdocker/lbdl-sync:latest
+    container_name: lbdl-sync
+    environment:
+      - LBDL_DATA_DIR=/app/music
+      - LBDL_CONFIG_DIR=/app/config
+      - LBDL_YTDLP_DIR=/app/config
+      - LBDL_AUDIO_FORMAT=opus
+      - LBDL_AUDIO_QUALITY=0
+      - LBDL_SCHEDULER_CRON=0 */2 * * *
+      - LBDL_TZ=UTC
+    volumes:
+      - /your/music/path:/app/music
+      - /your/config/path:/app/config
+    networks:
+      - lbdl-network
+    restart: unless-stopped
+
+networks:
+  lbdl-network:
+    driver: bridge

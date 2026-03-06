@@ -1,0 +1,145 @@
+version: '3.8'
+
+services:
+  lbdl-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: lbdl-api
+    ports:
+      - "8032:8032"
+    environment:
+      - LBDL_DATA_DIR=/app/music
+      - LBDL_CONFIG_DIR=/app/config
+      - LBDL_YTDLP_DIR=/app/config
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_VALIDATION_MODEL=${OLLAMA_VALIDATION_MODEL:-llama3.2:1b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./app:/app/app
+      - ./static:/app/static
+      - /mnt/Nazi/lbdl/music:/app/music
+      - /mnt/Nazi/lbdl/config:/app/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8032/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lbdl-network
+    restart: unless-stopped
+
+  lbdl-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile.sync
+    container_name: lbdl-sync
+    environment:
+      - LBDL_DATA_DIR=/app/music
+      - LBDL_CONFIG_DIR=/app/config
+      - LBDL_YTDLP_DIR=/app/config
+      - LBDL_SCHEDULER_CRON=0 */2 * * *
+    volumes:
+      - ./app:/app/app
+      - /mnt/Nazi/lbdl/music:/app/music
+      - /mnt/Nazi/lbdl/config:/app/config
+    networks:
+      - lbdl-network
+    restart: unless-stopped
+
+  # ── Optional background worker services ──────────────────────────────────────
+  # These are NOT required for normal operation. The API now downloads inline.
+  # Only start these if you want to offload downloads to separate containers.
+
+  lbdl-redis:
+    image: redis:7-alpine
+    container_name: lbdl-redis
+    profiles: ["workers"]
+    volumes:
+      - /mnt/Nazi/lbdl/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - lbdl-network
+
+  lbdl-rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: lbdl-rabbitmq
+    profiles: ["workers"]
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - /mnt/Nazi/lbdl/rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - lbdl-network
+
+  lbdl-downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile.downloader
+    container_name: lbdl-downloader
+    profiles: ["workers"]
+    environment:
+      - LBDL_DATA_DIR=/app/music
+      - LBDL_CONFIG_DIR=/app/config
+      - LBDL_YTDLP_DIR=/app/config
+      - REDIS_URL=redis://lbdl-redis:6379/0
+      - QUEUE_URL=amqp://guest:guest@lbdl-rabbitmq:5672//
+      - WORKER_CONCURRENCY=3
+    volumes:
+      - ./app:/app/app
+      - /mnt/Nazi/lbdl/music:/app/music
+      - /mnt/Nazi/lbdl/config:/app/config
+    depends_on:
+      lbdl-redis:
+        condition: service_healthy
+      lbdl-rabbitmq:
+        condition: service_healthy
+    networks:
+      - lbdl-network
+
+  lbdl-tagger:
+    build:
+      context: .
+      dockerfile: Dockerfile.tagger
+    container_name: lbdl-tagger
+    profiles: ["workers"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - LBDL_DATA_DIR=/app/music
+      - LBDL_CONFIG_DIR=/app/config
+      - REDIS_URL=redis://lbdl-redis:6379/0
+      - QUEUE_URL=amqp://guest:guest@lbdl-rabbitmq:5672//
+      - WORKER_CONCURRENCY=2
+      - LBDL_ACOUSTID_KEY=${LBDL_ACOUSTID_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_VALIDATION_MODEL=${OLLAMA_VALIDATION_MODEL:-llama3.2:1b}
+    volumes:
+      - ./app:/app/app
+      - /mnt/Nazi/lbdl/music:/app/music
+      - /mnt/Nazi/lbdl/config:/app/config
+    depends_on:
+      lbdl-redis:
+        condition: service_healthy
+      lbdl-rabbitmq:
+        condition: service_healthy
+    networks:
+      - lbdl-network
+
+networks:
+  lbdl-network:
+    driver: bridge

@@ -1,6 +1,6 @@
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 *.pyd
 .Python
@@ -9,26 +9,22 @@ dist/
 build/
 .venv/
 venv/
-env/
 
-# Runtime data (never commit music or config with tokens)
+# Runtime data — never commit user data
 music/
 config/
-*.log
-*.part
+*.json
+!static/manifest.json
 
 # Docker
 .dockerignore
 
-# IDE
+# Editor
 .vscode/
 .idea/
 *.swp
 *.swo
 .DS_Store
-Thumbs.db
 
-# Secrets
-cookies.txt
-*.env
-.env
+# Logs
+*.log

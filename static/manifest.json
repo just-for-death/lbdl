@@ -1,38 +1,42 @@
 {
-  "name": "lbdl — Playlist Downloader",
+  "name": "lbdl — Music Library",
   "short_name": "lbdl",
-  "description": "Download ListenBrainz, YouTube & Invidious playlists as organised audio files with synced lyrics",
-  "start_url": "/?source=pwa",
-  "id": "/",
+  "description": "Download and manage your music library",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
-  "background_color": "#0d0d18",
-  "theme_color": "#a044ff",
+  "display_override": ["standalone", "minimal-ui", "browser"],
   "orientation": "any",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
   "lang": "en",
   "dir": "ltr",
   "icons": [
-    { "src": "/static/icon.svg",    "sizes": "any",     "type": "image/svg+xml", "purpose": "any" },
-    { "src": "/static/icon.svg",    "sizes": "any",     "type": "image/svg+xml", "purpose": "maskable" }
+    { "src": "/static/icon-72.png",            "sizes": "72x72",   "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-96.png",            "sizes": "96x96",   "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-128.png",           "sizes": "128x128", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-144.png",           "sizes": "144x144", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-152.png",           "sizes": "152x152", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-192.png",           "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-192-maskable.png",  "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/static/icon-256.png",           "sizes": "256x256", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-384.png",           "sizes": "384x384", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png",           "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512-maskable.png",  "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/static/logo.svg",               "sizes": "any",     "type": "image/svg+xml", "purpose": "any" }
   ],
-  "categories": ["music", "utilities", "productivity"],
   "shortcuts": [
     {
-      "name": "New Download",
+      "name": "Download Playlist",
       "short_name": "Download",
-      "description": "Start a new playlist download",
-      "url": "/?action=new",
-      "icons": [{ "src": "/static/icon.svg", "sizes": "any" }]
+      "url": "/?tab=download",
+      "icons": [{ "src": "/static/icon-96.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "My Library",
+      "short_name": "Library",
+      "url": "/?tab=library",
+      "icons": [{ "src": "/static/icon-96.png", "sizes": "96x96" }]
     }
-  ],
-  "share_target": {
-    "action": "/",
-    "method": "GET",
-    "enctype": "application/x-www-form-urlencoded",
-    "params": { "url": "url", "text": "text", "title": "title" }
-  },
-  "protocol_handlers": [
-    { "protocol": "web+lbdl", "url": "/?url=%s" }
-  ],
-  "prefer_related_applications": false
+  ]
 }

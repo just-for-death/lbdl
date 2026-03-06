@@ -1,0 +1,23 @@
+FROM python:3.12-slim
+
+RUN apt-get update && \
+    apt-get install -y ffmpeg libchromaprint-tools && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app/ ./app/
+COPY shared_queue.py .
+COPY tagger_service.py .
+COPY docker-entrypoint-tagger.sh .
+RUN chmod +x docker-entrypoint-tagger.sh
+
+ENV LBDL_DATA_DIR=/app/music
+ENV LBDL_CONFIG_DIR=/app/config
+ENV LBDL_AUDIO_FORMAT=opus
+ENV LBDL_TZ=UTC
+
+ENTRYPOINT ["./docker-entrypoint-tagger.sh"]

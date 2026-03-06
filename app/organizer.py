@@ -1,459 +1,287 @@
 """
-organizer.py — Shared download logic for lbdl.
+app/organizer.py — Download orchestration and file management.
 
-Bug fixes in this version:
-  • find_existing_path()     — returns actual Path so M3U includes skipped tracks
-  • _capture_path hook       — checks d.get("filepath") first (FFmpegExtractAudio
-                               sets this key; info_dict.filepath is pre-conversion)
-  • already_exists()         — now delegates to find_existing_path()
-
-Output structure:
-  music/
-    Artist/
-      2024 - Album/
-        01 - Track.opus
-        01 - Track.lrc        ← synced lyrics sidecar
-        cover.jpg
-    _Playlists/
-      Home.m3u                ← separate from artist folders
+Handles:
+- Downloading audio via yt-dlp
+- Checking for existing tracks
+- File path conventions
+- M3U playlist generation
+- Cleanup of stale .part files
 """
 
+import json
 import logging
 import os
 import re
-import shutil
-import tempfile
-import threading
-import time
-import urllib.request
+import subprocess
+import uuid
 from pathlib import Path
 
-import yt_dlp
 from pathvalidate import sanitize_filename
+from rapidfuzz import fuzz
 
-AUDIO_FORMAT  = os.getenv("LBDL_AUDIO_FORMAT",  "opus")
-AUDIO_QUALITY = os.getenv("LBDL_AUDIO_QUALITY", "0")
-OUTPUT_DIR    = Path(os.getenv("LBDL_DATA_DIR",   "/app/music"))
-YTDLP_DIR     = Path(os.getenv("LBDL_YTDLP_DIR",  "/app/config"))
+logger = logging.getLogger("lbdl.organizer")
 
-logger = logging.getLogger(__name__)
+OUTPUT_DIR = Path(os.getenv("LBDL_DATA_DIR", "/app/music"))
+YTDLP_DIR  = Path(os.getenv("LBDL_YTDLP_DIR", "/app/config"))
+CONFIG_DIR = Path(os.getenv("LBDL_CONFIG_DIR", "/app/config"))
 
-YT_MUSIC_URL = "https://music.youtube.com/watch?v={video_id}"
-MAX_RETRIES  = 3
-RETRY_DELAY  = 1.0   # seconds; doubles each attempt (1 → 2 → 4)
+# Env-var defaults (used when settings.json is absent)
+_DEFAULT_FMT  = os.getenv("LBDL_AUDIO_FORMAT",  "opus")
+_DEFAULT_QUAL = os.getenv("LBDL_AUDIO_QUALITY", "0")
 
-
-# ── Filename helpers ──────────────────────────────────────────────────────────
-
-def safe(s: str) -> str:
-    result = sanitize_filename(str(s)).strip()
-    return result or "Unknown"
+AUDIO_EXTENSIONS = {".opus", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wav"}
 
 
-def dedup_artists(raw: str) -> str:
-    if not raw:
-        return raw
-    seen: set[str] = set()
-    unique: list[str] = []
-    for part in (p.strip() for p in raw.split(",")):
-        key = part.lower()
-        if key and key not in seen:
-            seen.add(key)
-            unique.append(part)
-    return ", ".join(unique)
-
-
-# ── Thumbnail upscaling ───────────────────────────────────────────────────────
-
-def upscale_thumbnail_url(url: str, size: int = 544) -> str:
-    return re.sub(r"=w\d+-h\d+", f"=w{size}-h{size}", url)
-
-
-# ── Thread-safe cover art cache ───────────────────────────────────────────────
-
-class _CoverCache:
-    def __init__(self) -> None:
-        self._cache: dict[str, bytes] = {}
-        self._lock  = threading.Lock()
-
-    def fetch(self, url: str | None) -> bytes | None:
-        if not url:
-            return None
-        with self._lock:
-            if url in self._cache:
-                return self._cache[url]
-        data = self._download(upscale_thumbnail_url(url))
-        if data:
-            with self._lock:
-                self._cache[url] = data
-        return data
-
-    def _download(self, url: str) -> bytes | None:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "lbdl/1.0"})
-            with urllib.request.urlopen(req, timeout=15) as r:
-                data = r.read()
-            return data
-        except Exception as exc:
-            logger.warning("Cover fetch failed (%s): %s", url, exc)
-            return None
-
-
-_cover_cache = _CoverCache()
-
-
-# ── .part file cleanup ────────────────────────────────────────────────────────
-
-def cleanup_part_files() -> int:
-    cleaned = 0
+def _live_fmt() -> tuple[str, str]:
+    """Read audio_format and audio_quality from settings.json if available."""
+    settings_path = CONFIG_DIR / "settings.json"
     try:
-        for part in OUTPUT_DIR.rglob("*.part"):
-            try:
-                part.unlink(missing_ok=True)
-                cleaned += 1
-            except OSError:
-                pass
-    except OSError:
+        if settings_path.exists():
+            with open(settings_path) as f:
+                s = json.load(f)
+            return s.get("audio_format", _DEFAULT_FMT), str(s.get("audio_quality", _DEFAULT_QUAL))
+    except Exception:
         pass
-    if cleaned:
-        logger.info("Removed %d stale .part file(s)", cleaned)
-    return cleaned
+    return _DEFAULT_FMT, _DEFAULT_QUAL
 
 
-# ── Metadata ──────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-def get_metadata(video_id: str) -> dict:
-    url = YT_MUSIC_URL.format(video_id=video_id)
-    opts: dict = {"quiet": True, "no_warnings": True, "color": "never"}
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return dict(info) if info else {}
-    except Exception as exc:
-        logger.warning("Metadata fetch failed for %s: %s", video_id, exc)
-        return {}
+def _safe(name: str) -> str:
+    """Sanitize a string for use as a filename component."""
+    return sanitize_filename(name, replacement_text="_").strip() or "Unknown"
 
 
-def resolve_path(meta: dict, fallback_artist: str, fallback_title: str) -> Path:
-    raw_artist = meta.get("artist") or meta.get("uploader") or fallback_artist or "Unknown Artist"
-    artist = safe(dedup_artists(raw_artist))
-    album  = safe(meta.get("album") or "Unknown Album")
-    title  = safe(meta.get("title") or fallback_title or "Unknown Title")
-
-    year = (
-        meta.get("release_year")
-        or meta.get("release_date", "")[:4]
-        or str(meta.get("upload_date", ""))[:4]
-        or "Unknown Year"
-    )
-
-    track_num = meta.get("track_number") or meta.get("playlist_index")
-    filename  = f"{int(track_num):02d} - {title}" if track_num else title
-
-    return OUTPUT_DIR / artist / f"{year} - {album}" / filename
+def _artist_dir(artist: str) -> Path:
+    return OUTPUT_DIR / _safe(artist)
 
 
-# ── Audio tagging via mediafile ───────────────────────────────────────────────
-
-def _apply_tags(path: Path, meta: dict) -> None:
-    try:
-        from mediafile import MediaFile
-        raw   = meta.get("artist") or meta.get("uploader") or ""
-        dedup = dedup_artists(raw)
-        parts = [a.strip() for a in dedup.split(",") if a.strip()]
-        if not parts:
-            return
-        joined = " / ".join(parts)
-
-        audio = MediaFile(path)
-        audio.artist       = joined
-        audio.albumartist  = joined
-        audio.artists      = parts
-        audio.albumartists = parts
-        audio.save()
-    except Exception as exc:
-        logger.warning("Could not tag %s: %s", path.name, exc)
+def _expected_path(artist: str, title: str, ext: str | None = None) -> Path:
+    fmt = ext or _live_fmt()[0]
+    return _artist_dir(artist) / f"{_safe(title)}.{fmt}"
 
 
-def _embed_lyrics_tag(lrc: str, path: Path) -> None:
-    plain = re.sub(r"\[\d+:\d+\.\d+\]", "", lrc).strip()
-    if not plain:
-        return
-    try:
-        from mediafile import MediaFile
-        audio = MediaFile(path)
-        audio.lyrics = plain
-        audio.save()
-    except Exception as exc:
-        logger.warning("Could not embed lyrics into %s: %s", path.name, exc)
-
-
-# ── Lyrics ────────────────────────────────────────────────────────────────────
-
-def fetch_lyrics(title: str, artist: str, log_fn=None) -> str | None:
-    def _log(msg: str) -> None:
-        logger.info(msg)
-        if log_fn:
-            log_fn(msg)
-
-    try:
-        import syncedlyrics
-    except ImportError:
-        _log("  ♪ LYRICS ERROR: syncedlyrics not installed")
-        return None
-
-    primary_artist = artist.split(",")[0].strip() if artist else ""
-
-    queries: list[tuple[str, str]] = []
-    if primary_artist:
-        queries.append((f"{primary_artist} - {title}", f"primary artist: {primary_artist!r}"))
-    queries.append((title, "title only"))
-
-    for query, query_desc in queries:
-        _log(f"  ♪ Searching lyrics [{query_desc}]: {query!r}")
-        try:
-            lrc = syncedlyrics.search(query)
-            if lrc:
-                is_synced = bool(re.search(r'\[\d+:\d+\.\d+\]', lrc))
-                kind = "synced" if is_synced else "plain text"
-                _log(f"  ♪ ✓ Lyrics found ({kind})")
-                return lrc
-            else:
-                _log(f"  ♪ No match for query: {query!r}")
-        except Exception as exc:
-            _log(f"  ♪ Search error: {exc}")
-
-    _log(f"  ♪ No lyrics found for {title!r}")
-    return None
-
-
-def save_lrc(lrc: str, audio_path: Path) -> Path:
-    lrc_path = audio_path.with_suffix(".lrc")
-    lrc_path.write_text(lrc, encoding="utf-8")
-    return lrc_path
-
-
-# ── Download ──────────────────────────────────────────────────────────────────
-
-def _build_ytdlp_opts(dest_path: Path, folder: Path, temp_cookies: Path | None) -> dict:
-    opts: dict = {
-        "format": (
-            f"bestaudio[ext={AUDIO_FORMAT}]"
-            f"/bestaudio[acodec={AUDIO_FORMAT}]"
-            "/bestaudio/best"
-        ),
-        "outtmpl": {
-            "default":   str(dest_path) + ".%(ext)s",
-            "thumbnail": str(folder / "cover") + ".%(ext)s",
-        },
-        "postprocessors": [
-            {
-                "key":             "FFmpegExtractAudio",
-                "preferredcodec":  AUDIO_FORMAT,
-                "preferredquality": str(AUDIO_QUALITY),
-            },
-            {"key": "FFmpegMetadata"},
-            {"key": "EmbedThumbnail"},
-        ],
-        "writethumbnail":    True,
-        "convertthumbnails": "jpg",
-        "quiet":             True,
-        "no_warnings":       True,
-        "color":             "never",
-        "retry_sleep_functions": {
-            "http":     lambda n: min(2 ** n, 30),
-            "fragment": lambda n: min(2 ** n, 30),
-        },
-        "remote_components": ["ejs:github"],
-    }
-    if temp_cookies and temp_cookies.exists():
-        opts["cookiefile"] = str(temp_cookies)
-    return opts
-
-
-def _is_retryable(msg: str) -> bool:
-    return any(p in msg for p in (
-        "HTTP Error 403", "403 Forbidden",
-        "HTTP Error 429",
-        "HTTP Error 5",
-    ))
-
-
-def download_track(
-    video_id: str,
-    fallback_artist: str = "",
-    fallback_title:  str = "",
-    log_fn=None,
-) -> tuple[bool, Path | None, str]:
-    def _log(msg: str) -> None:
-        logger.info(msg)
-        if log_fn:
-            log_fn(msg)
-
-    url = YT_MUSIC_URL.format(video_id=video_id)
-    _log(f"Downloading {video_id} ({fallback_artist} – {fallback_title})")
-
-    meta      = get_metadata(video_id)
-    dest_path = resolve_path(meta, fallback_artist, fallback_title)
-    folder    = dest_path.parent
-    folder.mkdir(parents=True, exist_ok=True)
-    _log(f"Target: {dest_path}.{AUDIO_FORMAT}")
-
-    cookies_src  = YTDLP_DIR / "cookies.txt"
-    temp_cookies: Path | None = None
-    if cookies_src.exists():
-        fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="lbdl_cookies_")
-        os.close(fd)
-        temp_cookies = Path(tmp)
-        shutil.copy2(cookies_src, temp_cookies)
-
-    actual_path: Path | None = None
-    error_msg   = ""
-    success     = False
-
-    def _capture_path(d: dict) -> None:
-        """Postprocessor hook — captures final output path after FFmpegExtractAudio.
-
-        BUG FIX: yt-dlp sets d["filepath"] (top-level) on the postprocessor
-        finished event for FFmpegExtractAudio, pointing to the converted file.
-        The original code only checked d["info_dict"]["filepath"] which may
-        still reference the pre-conversion container (e.g. .webm).
-        """
-        nonlocal actual_path
-        if d.get("status") == "finished":
-            # Top-level filepath is set by FFmpegExtractAudio to the output file
-            fp = d.get("filepath") or d.get("info_dict", {}).get("filepath")
-            if fp:
-                actual_path = Path(fp)
-
-    opts = _build_ytdlp_opts(dest_path, folder, temp_cookies)
-    opts["postprocessor_hooks"] = [_capture_path]
-
-    try:
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([url])
-                success = True
-                break
-
-            except Exception as exc:
-                error_msg = str(exc)
-
-                if "Video unavailable" in error_msg:
-                    logger.error("Video %s unavailable (region-locked?)", video_id)
-                    break
-                if "Sign in" in error_msg or "cookies" in error_msg.lower():
-                    logger.error("Authentication required for %s — provide cookies.txt", video_id)
-                    break
-
-                if _is_retryable(error_msg) and attempt < MAX_RETRIES:
-                    delay = RETRY_DELAY * (2 ** attempt)
-                    logger.warning(
-                        "Attempt %d/%d failed, retrying in %.1fs: %s",
-                        attempt + 1, MAX_RETRIES + 1, delay, error_msg,
-                    )
-                    for part in folder.glob(f"{dest_path.name}*.part"):
-                        part.unlink(missing_ok=True)
-                    time.sleep(delay)
-                    continue
-
-                logger.error("Download failed for %s: %s", video_id, error_msg)
-                break
-    finally:
-        if temp_cookies:
-            temp_cookies.unlink(missing_ok=True)
-
-    if not success:
-        return False, None, error_msg
-
-    final_path = actual_path
-    if not final_path or not final_path.exists():
-        final_path = Path(f"{dest_path}.{AUDIO_FORMAT}")
-    if not final_path.exists():
-        for p in folder.glob(f"{dest_path.name}.*"):
-            if p.suffix.lstrip(".") in ("opus", "mp3", "flac", "ogg", "m4a", "webm"):
-                final_path = p
-                break
-
-    if not final_path or not final_path.exists():
-        return False, None, "Output file not found after download"
-
-    logger.info("yt-dlp succeeded → %s", final_path.name)
-
-    _apply_tags(final_path, meta)
-
-    track_title  = meta.get("title") or fallback_title
-    track_artist = dedup_artists(
-        meta.get("artist") or meta.get("uploader") or fallback_artist
-    )
-    lrc_path = final_path.with_suffix(".lrc")
-    if lrc_path.exists():
-        logger.debug("Lyrics sidecar already present: %s", lrc_path.name)
-    else:
-        lrc = fetch_lyrics(track_title, track_artist, log_fn=_log)
-        if lrc:
-            save_lrc(lrc, final_path)
-            _embed_lyrics_tag(lrc, final_path)
-            _log(f"  ♪ Lyrics saved: {final_path.with_suffix('.lrc').name}")
-
-    return True, final_path, ""
-
-
-# ── Existence check ───────────────────────────────────────────────────────────
-
-def find_existing_path(artist: str, title: str) -> Path | None:
-    """Return path of an existing audio file for this track, or None.
-
-    BUG FIX: the old already_exists() only returned bool, so tracks skipped
-    as duplicates had track.final_path=None and were omitted from the M3U.
-    Callers should use this to capture the path and include it in the playlist.
-    """
-    safe_title = safe(title)
-    for ext in ("opus", "mp3", "flac", "ogg", "m4a", "webm"):
-        matches = list(OUTPUT_DIR.glob(f"*/*/{safe_title}.{ext}"))
-        if matches:
-            return matches[0]
-        flat = OUTPUT_DIR / f"{safe(artist)} - {safe_title}.{ext}"
-        if flat.exists():
-            return flat
-    return None
-
+# ── Existence checks ───────────────────────────────────────────────────────────
 
 def already_exists(artist: str, title: str) -> bool:
-    """Return True if any audio file for this track already exists on disk."""
+    """Return True if any audio file matching artist/title exists (exact or fuzzy)."""
     return find_existing_path(artist, title) is not None
 
 
-# ── M3U generation ────────────────────────────────────────────────────────────
+# Fuzzy-match thresholds
+_TITLE_THRESHOLD  = 88   # % similarity required on title stem
+_ARTIST_THRESHOLD = 75   # % similarity required on artist when both are non-empty
 
-def _audio_duration(path: Path) -> int:
+
+def _norm(s: str) -> str:
+    """Normalise for comparison: lowercase, strip punctuation noise."""
+    s = s.lower().strip()
+    # Drop common suffixes that vary between sources
+    s = re.sub(r"\s*[\(\[].*?[\)\]]", "", s)          # (Official Video), [Remaster], …
+    s = re.sub(r"\s*-\s*(official|lyrics?|audio|video|topic|vevo).*$", "", s)
+    s = re.sub(r"[^\w\s]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def find_existing_path(artist: str, title: str) -> Path | None:
+    """Return the Path to an existing track, or None.
+
+    Three-tier search (stops at first hit):
+    1. Exact stem match in the expected artist directory  (fast).
+    2. Exact stem match anywhere under OUTPUT_DIR         (handles re-tagging).
+    3. Fuzzy stem match anywhere under OUTPUT_DIR         (catches YouTube noise,
+       slight title variations, artist misspellings).
+    """
+    safe_stem  = _safe(title).lower()
+    norm_title = _norm(title)
+    norm_artist = _norm(artist)
+
+    # ── Tier 1: exact match in expected artist dir ─────────────────────────────
+    artist_dir = _artist_dir(artist)
+    if artist_dir.exists():
+        for f in artist_dir.iterdir():
+            if f.suffix in AUDIO_EXTENSIONS and f.stem.lower() == safe_stem:
+                return f
+
+    # ── Tier 2 & 3: walk all artist subdirs ───────────────────────────────────
+    fuzzy_best: tuple[float, Path | None] = (0.0, None)
+
+    if OUTPUT_DIR.exists():
+        for subdir in OUTPUT_DIR.iterdir():
+            if not subdir.is_dir():
+                continue
+            if subdir.name.startswith("_") or subdir.name.startswith("."):
+                continue
+            for f in subdir.iterdir():
+                if f.suffix not in AUDIO_EXTENSIONS:
+                    continue
+
+                # Tier 2 — exact on sanitised stem
+                if f.stem.lower() == safe_stem:
+                    if subdir != artist_dir:
+                        logger.debug(
+                            "find_existing_path: exact match in wrong dir — %r in %s",
+                            title, subdir.name,
+                        )
+                    return f
+
+                # Tier 3 — fuzzy on normalised stem
+                norm_stem = _norm(f.stem)
+                title_score = fuzz.token_sort_ratio(norm_title, norm_stem)
+
+                # If we have an artist folder name to cross-check, use it to
+                # raise confidence (avoids false positives on common short titles)
+                if norm_artist and title_score >= _TITLE_THRESHOLD - 10:
+                    artist_score = fuzz.token_sort_ratio(norm_artist, _norm(subdir.name))
+                    if artist_score >= _ARTIST_THRESHOLD:
+                        combined = (title_score * 0.7) + (artist_score * 0.3)
+                        if combined > fuzzy_best[0]:
+                            fuzzy_best = (combined, f)
+                elif title_score >= _TITLE_THRESHOLD:
+                    if title_score > fuzzy_best[0]:
+                        fuzzy_best = (title_score, f)
+
+    if fuzzy_best[1] is not None:
+        logger.info(
+            "find_existing_path: fuzzy match (%.0f%%) for %r → %s",
+            fuzzy_best[0], title, fuzzy_best[1],
+        )
+        return fuzzy_best[1]
+
+    return None
+
+
+# ── Download ───────────────────────────────────────────────────────────────────
+
+def download_track(
+    video_id: str,
+    artist: str,
+    title: str,
+    log_fn=None,
+) -> tuple[bool, Path | None, str]:
+    """
+    Download a track from YouTube Music using yt-dlp.
+
+    Returns:
+        (success, final_path_or_None, output_or_error_string)
+    """
+    if log_fn is None:
+        log_fn = lambda msg: logger.debug(msg)
+
+    dest_dir = _artist_dir(artist)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    audio_fmt, audio_qual = _live_fmt()
+    safe_title = _safe(title)
+    tmp_stem   = f"{safe_title}_{uuid.uuid4().hex[:6]}"
+    tmp_out    = dest_dir / f"{tmp_stem}.%(ext)s"
+
+    cookies_file = YTDLP_DIR / "cookies.txt"
+    cmd = [
+        "yt-dlp",
+        "--no-playlist",
+        "-x",
+        "--audio-format", audio_fmt,
+        "--audio-quality", audio_qual,
+        "-o", str(tmp_out),
+        "--no-progress",
+        "--quiet",
+        "--print", "after_move:filepath",
+    ]
+
+    if cookies_file.exists():
+        cmd += ["--cookies", str(cookies_file)]
+
+    cmd.append(f"https://www.youtube.com/watch?v={video_id}")
+
+    log_fn(f"  yt-dlp {video_id} → {dest_dir.name}/{safe_title}")
+
     try:
-        from mediafile import MediaFile
-        length = MediaFile(path).length
-        return int(length) if length else -1
-    except Exception:
-        return -1
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        return False, None, "yt-dlp timed out after 300 s"
+    except Exception as exc:
+        return False, None, str(exc)
 
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        log_fn(f"  yt-dlp error: {err[:400]}")
+        return False, None, err
+
+    # yt-dlp prints the final path; use it if available
+    printed = proc.stdout.strip().splitlines()
+    final_path: Path | None = None
+    if printed:
+        candidate = Path(printed[-1])
+        if candidate.exists():
+            final_path = candidate
+
+    # Fallback: look for the file we just created
+    if final_path is None:
+        for ext in AUDIO_EXTENSIONS:
+            p = dest_dir / f"{tmp_stem}{ext}"
+            if p.exists():
+                final_path = p
+                break
+
+    if final_path is None:
+        return False, None, "Downloaded file not found on disk"
+
+    # Rename to canonical name
+    canonical = dest_dir / f"{safe_title}{final_path.suffix}"
+    if final_path != canonical:
+        try:
+            final_path.rename(canonical)
+            final_path = canonical
+        except OSError:
+            pass  # keep tmp name if rename fails
+
+    log_fn(f"  saved → {final_path.relative_to(OUTPUT_DIR)}")
+    return True, final_path, ""
+
+
+# ── M3U generation ─────────────────────────────────────────────────────────────
 
 def generate_m3u(playlist_name: str, track_paths: list[Path]) -> Path:
-    playlists_dir = OUTPUT_DIR / "_Playlists"
-    playlists_dir.mkdir(parents=True, exist_ok=True)
+    """Write an M3U playlist file and return its path."""
+    playlist_dir = OUTPUT_DIR / "_Playlists"
+    playlist_dir.mkdir(parents=True, exist_ok=True)
 
-    m3u_path = playlists_dir / f"{safe(playlist_name)}.m3u"
-    lines    = ["#EXTM3U", ""]
+    safe_name = _safe(playlist_name) or "playlist"
+    m3u_path  = playlist_dir / f"{safe_name}.m3u"
 
-    for p in track_paths:
-        if p and p.exists():
-            rel      = os.path.relpath(p, playlists_dir)
-            duration = _audio_duration(p)
-            lines.append(f"#EXTINF:{duration},{p.stem}")
-            lines.append(rel)
+    with open(m3u_path, "w", encoding="utf-8") as f:
+        f.write("#EXTM3U\n")
+        for p in track_paths:
+            if p and p.exists():
+                try:
+                    rel = p.relative_to(OUTPUT_DIR)
+                    f.write(f"../{rel}\n")
+                except ValueError:
+                    f.write(f"{p}\n")
 
-    m3u_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    logger.info(
-        "M3U written: _Playlists/%s (%d track(s))",
-        m3u_path.name,
-        len([p for p in track_paths if p and p.exists()]),
-    )
+    logger.info("M3U written: %s (%d tracks)", m3u_path, len(track_paths))
     return m3u_path
+
+
+# ── Cleanup ────────────────────────────────────────────────────────────────────
+
+def cleanup_part_files() -> int:
+    """Remove stale yt-dlp .part files left by interrupted downloads."""
+    removed = 0
+    if not OUTPUT_DIR.exists():
+        return 0
+    for part in OUTPUT_DIR.rglob("*.part"):
+        try:
+            part.unlink()
+            removed += 1
+            logger.debug("Removed stale part file: %s", part)
+        except OSError:
+            pass
+    return removed
