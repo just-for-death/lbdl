@@ -1,16 +1,15 @@
 # lbdl — Portainer Stack
 #
 # Replace every occurrence of:
-#   ustxforxdocker  → your Docker Hub username
-#   /your/music/path     → absolute path to your music library
-#   /your/config/path    → absolute path for settings/playlists/cookies
+#   /your/music/path  → absolute path to your music library
+#   /your/config/path → absolute path for settings/playlists/cookies
 #
 # Deploy in Portainer:  Stacks → Add Stack → paste this file → Deploy
 
 services:
 
   lbdl-api:
-    image: ustxforxdocker/lbdl-api:latest
+    image: justxforxdocker/lbdl-api:latest
     container_name: lbdl-api
     ports:
       - "8032:8032"
@@ -20,6 +19,7 @@ services:
       - LBDL_YTDLP_DIR=/app/config
       - LBDL_AUDIO_FORMAT=opus
       - LBDL_AUDIO_QUALITY=0
+      - LBDL_SCHEDULER_CRON=0 */2 * * *
       - LBDL_LB_TOKEN=
       - LBDL_INVIDIOUS_INSTANCE=https://inv.nadeko.net
       - LBDL_ACOUSTID_KEY=
@@ -40,7 +40,7 @@ services:
     restart: unless-stopped
 
   lbdl-sync:
-    image: ustxforxdocker/lbdl-sync:latest
+    image: justxforxdocker/lbdl-sync:latest
     container_name: lbdl-sync
     environment:
       - LBDL_DATA_DIR=/app/music

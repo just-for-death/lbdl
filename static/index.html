@@ -454,6 +454,21 @@
         </div>
       </div>
       <div class="settings-section">
+        <div class="slabel">Auto-Sync Behaviour</div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+          <label style="position:relative;display:inline-block;width:38px;height:20px;flex-shrink:0">
+            <input type="checkbox" id="sAutotagAfterSync" style="opacity:0;width:0;height:0;position:absolute"/>
+            <span id="sAutotagAfterSyncSlider" onclick="toggleAutotagAfterSync()" style="position:absolute;cursor:pointer;inset:0;background:#333;border-radius:20px;transition:.2s;display:block">
+              <span id="sAutotagAfterSyncKnob" style="position:absolute;width:14px;height:14px;background:#888;border-radius:50%;left:3px;top:3px;transition:.2s;display:block"></span>
+            </span>
+          </label>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text)">Auto-tag untagged tracks after every playlist sync</span>
+        </div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.7">
+          When enabled, the <b style="color:#7ae0b5">⟳ Untagged</b> auto-tagger runs automatically whenever a scheduled or manual playlist download finishes with at least one new track. Uses the same iTunes → MusicBrainz → AcoustID pipeline as the library button.
+        </div>
+      </div>
+      <div class="settings-section">
         <div class="slabel">Audio Format</div>
         <div class="format-grid" id="formatGrid"></div>
         <div class="quality-row">
@@ -1469,8 +1484,13 @@ function applyUI(s){
   const fl = s.fetch_lyrics !== false; // default true
   _fetchLyricsEnabled = fl;
   _updateLyricsToggleUI(fl);
+  // Auto-tag after sync toggle
+  const ats = s.autotag_after_sync === true;
+  _autotagAfterSyncEnabled = ats;
+  _updateAutotagAfterSyncUI(ats);
 }
 let _fetchLyricsEnabled = true;
+let _autotagAfterSyncEnabled = false;
 function _updateLyricsToggleUI(on){
   const slider=document.getElementById('sFetchLyricsSlider');
   const knob=document.getElementById('sFetchLyricsKnob');
@@ -1482,9 +1502,20 @@ function toggleFetchLyrics(){
   _fetchLyricsEnabled=!_fetchLyricsEnabled;
   _updateLyricsToggleUI(_fetchLyricsEnabled);
 }
+function _updateAutotagAfterSyncUI(on){
+  const slider=document.getElementById('sAutotagAfterSyncSlider');
+  const knob=document.getElementById('sAutotagAfterSyncKnob');
+  if(slider)slider.style.background=on?'#4a9e72':'#333';
+  if(knob)knob.style.left=on?'21px':'3px';
+  if(knob)knob.style.background=on?'#fff':'#888';
+}
+function toggleAutotagAfterSync(){
+  _autotagAfterSyncEnabled=!_autotagAfterSyncEnabled;
+  _updateAutotagAfterSyncUI(_autotagAfterSyncEnabled);
+}
 async function saveSettings(){
   const fmt=document.querySelector('.fmt-btn.active')?.dataset.fmt||'opus';
-  const payload={lb_token:document.getElementById('sLbToken').value.trim(),invidious_instance:document.getElementById('sInvidious').value.trim(),audio_format:fmt,audio_quality:document.getElementById('qualitySlider').value,sync_cron:document.getElementById('sCron').value.trim(),gotify_url:document.getElementById('sGotifyUrl').value.trim(),gotify_token:document.getElementById('sGotifyToken').value.trim(),gotify_priority:parseInt(document.getElementById('sGotifyPriority').value)||5,acoustid_key:document.getElementById('sAcoustidKey').value.trim(),fetch_lyrics:_fetchLyricsEnabled};
+  const payload={lb_token:document.getElementById('sLbToken').value.trim(),invidious_instance:document.getElementById('sInvidious').value.trim(),audio_format:fmt,audio_quality:document.getElementById('qualitySlider').value,sync_cron:document.getElementById('sCron').value.trim(),gotify_url:document.getElementById('sGotifyUrl').value.trim(),gotify_token:document.getElementById('sGotifyToken').value.trim(),gotify_priority:parseInt(document.getElementById('sGotifyPriority').value)||5,acoustid_key:document.getElementById('sAcoustidKey').value.trim(),fetch_lyrics:_fetchLyricsEnabled,autotag_after_sync:_autotagAfterSyncEnabled};
   const st=document.getElementById('saveStatus');st.textContent='Saving…';st.className='save-status';
   try{
     const res=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});

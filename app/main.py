@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-logger = logging.getLogger("lbdl.main")
 import os
 import re
 import time
@@ -12,6 +11,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+
+logger = logging.getLogger("lbdl.main")
 
 import requests
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
@@ -51,8 +52,12 @@ def get_ytm() -> YTMusic:
         try:
             _ytm = YTMusic()
         except Exception as e:
-            logging.getLogger("lbdl").error("YTMusic init failed: %s", e)
-            _ytm = YTMusic()   # retry once — may succeed without headers
+            logger.warning("YTMusic init failed (%s) — retrying without headers", e)
+            try:
+                _ytm = YTMusic()
+            except Exception as e2:
+                logger.error("YTMusic init failed on retry: %s — searches will fail", e2)
+                raise RuntimeError(f"YTMusic unavailable: {e2}") from e2
     return _ytm
 
 # ── Settings persistence ──────────────────────────────────────────────────────
@@ -74,6 +79,8 @@ DEFAULT_SETTINGS = {
     # Duplicate cleanup: cron expression + enable toggle
     "dedup_enabled":     False,
     "dedup_cron":        "0 4 * * *",   # daily at 04:00 by default
+    # Auto-tag untagged tracks after every playlist download completes
+    "autotag_after_sync": False,
 }
 
 def load_settings() -> dict:
@@ -157,11 +164,12 @@ class WSLogHandler(logging.Handler):
         if len(server_log_history) > 500:
             server_log_history.pop(0)
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(_broadcast_server_log(msg))
+            loop = asyncio.get_running_loop()
+            loop.call_soon_threadsafe(
+                lambda m=msg: asyncio.ensure_future(_broadcast_server_log(m), loop=loop)
+            )
         except RuntimeError:
-            pass
+            pass  # No running loop — container startup or sync context, skip broadcast
 
 
 async def _broadcast_server_log(msg: str):
@@ -215,12 +223,30 @@ jobs:        dict[str, Job]             = {}
 job_queue:   Queue                      = Queue()
 subscribers: dict[str, list[WebSocket]] = {}
 
+_MAX_JOBS = 200  # Keep last N jobs in memory
+
+
+def _evict_old_jobs() -> None:
+    """Remove oldest completed/errored jobs beyond _MAX_JOBS to prevent memory leak."""
+    if len(jobs) <= _MAX_JOBS:
+        return
+    finished = [
+        (jid, j) for jid, j in jobs.items()
+        if j.status in (JobStatus.DONE, JobStatus.ERROR)
+    ]
+    # Sort oldest first — job.id is a UUID but we can approximate by insertion order
+    to_remove = len(jobs) - _MAX_JOBS
+    for jid, _ in finished[:to_remove]:
+        jobs.pop(jid, None)
+        subscribers.pop(jid, None)
+
 # ── Library state ─────────────────────────────────────────────────────────────
 
 library_cache:   list[dict]    = []
 library_index:   dict[str, dict] = {}   # track_id → meta dict
 lib_scan_status: dict          = {"running": False, "scanned": 0, "total": 0, "done": False}
 lib_subscribers: list[WebSocket] = []
+_autotag_running: bool = False
 
 
 # ── URL Detection ─────────────────────────────────────────────────────────────
@@ -359,6 +385,23 @@ async def process_job(job: Job):
         await log(f"Finished — {done_count} downloaded, {failed_count} failed")
         await broadcast(job.id, {"type": "job_done", "done": done_count, "failed": failed_count})
 
+        # Auto-tag untagged tracks after sync, if the setting is enabled
+        if done_count > 0 and bool(cfg().get("autotag_after_sync", False)):
+            untagged = _untagged_tracks()
+            if untagged:
+                await log(f"  ⟳ Auto-tagging {len(untagged)} untagged track(s)…")
+
+                # Wrap the batch so we can append a summary line to this job's log
+                async def _autotag_then_log(tracks=untagged):
+                    await _run_autotag_batch(tracks)
+                    done_t  = sum(1 for t in tracks if t.get("status") != "failed")
+                    total_t = len(tracks)
+                    await log(f"  ✓ Auto-tag complete — {total_t} processed")
+
+                asyncio.ensure_future(_autotag_then_log())
+            else:
+                await log("  ✓ Auto-tag: all tracks already tagged")
+
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, notify_gotify,
             f"lbdl — {job.playlist_name or 'Playlist'} done",
@@ -457,8 +500,13 @@ def _cache_has_track(artist: str, title: str) -> tuple[bool, dict | None]:
 
     # Use aggressive YouTube normalisation on the query side;
     # use standard dedup normalisation on the clean cached tags.
-    norm_q_title  = _norm_yt_title(title)
+    # We try multiple title variants (full + pre-dash) to handle the common
+    # Bollywood pattern "Song - Movie | Artist …" where the library stores
+    # only the bare song name and the dash-separated movie suffix would
+    # otherwise inflate the fuzzy distance past the acceptance threshold.
     norm_q_artist = _norm_dedup(artist)
+    norm_q_title_variants = _norm_yt_title_variants(title, artist)
+    norm_q_title  = norm_q_title_variants[0]   # primary (full normalised)
 
     _channel_re = re.compile(
         r"\b(music|records?|official|entertainment|vevo|films?|studios?|channel"
@@ -476,13 +524,30 @@ def _cache_has_track(artist: str, title: str) -> tuple[bool, dict | None]:
             m.get("artist", "") or m.get("albumartist", "") or ""
         )
 
-        # 1. Exact normalised title match
-        if norm_q_title and norm_q_title == norm_c_title:
-            logger.debug("_cache_has_track: exact title match for %r → %s", title, m.get("path"))
-            return True, m
+        # V6 — lib-artist-strip: if this cache entry's clean artist name appears
+        # in the query title (e.g. "Channa Mereya Arijit Singh" and lib artist
+        # is "Arijit Singh"), build a per-entry stripped variant on the fly.
+        entry_variants = list(norm_q_title_variants)
+        if norm_c_artist and norm_c_artist in norm_q_title:
+            stripped_v6 = re.sub(r"\s+", " ",
+                re.sub(re.escape(norm_c_artist), " ", norm_q_title)).strip()
+            if stripped_v6 and stripped_v6 not in entry_variants:
+                entry_variants.append(stripped_v6)
 
-        # 2. Fuzzy title (lower pre-filter now that the query is clean)
-        t_score = _fuzz.token_sort_ratio(norm_q_title, norm_c_title)
+        # 1. Exact normalised title match — try every variant
+        for nqt in entry_variants:
+            if nqt and nqt == norm_c_title:
+                logger.debug(
+                    "_cache_has_track: exact title match (variant %r) for %r → %s",
+                    nqt, title, m.get("path"),
+                )
+                return True, m
+
+        # 2. Fuzzy title — use the best-scoring variant (including V6)
+        t_score = max(
+            _fuzz.token_sort_ratio(nqt, norm_c_title)
+            for nqt in entry_variants
+        )
         if t_score < 82:
             continue
 
@@ -710,6 +775,7 @@ async def create_job(body: dict):
         source=source,
         invidious_instance=invidious_instance,
     )
+    _evict_old_jobs()
     jobs[job.id] = job
     await job_queue.put(job)
     return {"job_id": job.id, "source": source}
@@ -836,6 +902,14 @@ async def update_settings(request: Request):
         body = await request.json()
     except Exception:
         return {"error": "invalid JSON"}
+    # Validate cron fields before saving
+    for cron_key in ("sync_cron", "dedup_cron"):
+        val = (body.get(cron_key) or "").strip()
+        if val and _parse_cron_to_seconds(val) is None:
+            return {
+                "error": f"Invalid cron expression for '{cron_key}': {val!r}. "
+                         f"Only simple 'M H * * *' patterns are supported (e.g. '0 4 * * *')."
+            }
     updated = save_settings(body)
     return {"ok": True, "settings": updated}
 
@@ -1010,6 +1084,11 @@ async def library_apply_candidate(tid: str, request: Request):
     return {"ok": True, "track": updated}
 
 
+# Characters that appear in raw yt-dlp filenames but NEVER in a clean
+# reorganised title (apply_metadata_and_reorganize writes Artist/Title.ext).
+_YT_STEM_NOISE_RE = re.compile(r'_|[|｜]|vevo|topic|official', re.I)
+
+
 def _is_untagged(meta: dict) -> bool:
     """
     Return True when a track appears to have never been successfully auto-tagged.
@@ -1017,11 +1096,13 @@ def _is_untagged(meta: dict) -> bool:
     A track is considered untagged when ANY of:
       • artist  is blank/missing
       • album   is blank/missing
-      • title   equals the bare filename stem (raw yt-dlp download name)
+      • title   equals the bare filename stem AND that stem looks like a raw
+                yt-dlp download name (contains underscores, pipes, or noise
+                keywords).  We deliberately exclude the plain title==stem case
+                because apply_metadata_and_reorganize renames files to
+                Artist/Title.ext, so a properly tagged "Namastute.opus" will
+                always have stem == title — that is not a sign of missing tags.
       • title   contains YouTube noise patterns ("| Official", " - Topic", etc.)
-
-    This is intentionally broad — it is better to re-tag a track that was already
-    partially tagged than to skip one that genuinely needs metadata.
     """
     artist = (meta.get("artist") or "").strip()
     album  = (meta.get("album")  or "").strip()
@@ -1031,9 +1112,13 @@ def _is_untagged(meta: dict) -> bool:
     if not artist or not album:
         return True
 
-    # Title equals raw filename stem — yt-dlp sets title to filename when no tags exist
+    # Title equals a RAW yt-dlp filename stem — only flag when the stem itself
+    # contains yt-dlp noise (underscores, pipes, "official", "topic", "vevo").
+    # A clean organised file like Seedhe Maut/Namastute.opus has stem==title
+    # which is correct, not a sign of missing metadata.
     stem = Path(path).stem if path else ""
-    if stem and title.lower() == stem.lower():
+    if (stem and title.lower() == stem.lower()
+            and (len(stem) > 100 or _YT_STEM_NOISE_RE.search(stem))):
         return True
 
     # YouTube noise patterns common in raw downloads
@@ -1091,38 +1176,142 @@ def _norm_dedup(s: str) -> str:
 
 # Suffixes that YouTube channels append to titles but are never in clean tags.
 _YT_PIPE_RE    = re.compile(r"\s*[\|｜]\s*.*$")
+_YT_PIPE_SPLIT_RE = re.compile(r"[\|｜]")   # split on pipe without consuming
+
+# _YT_SUFFIX_RE — strip trailing "decoration" appended by YouTube uploaders.
+# Order matters: more-specific patterns first.
 _YT_SUFFIX_RE  = re.compile(
-    r"\s+with\s+lyrics?\b.*$"
-    r"|\s+lyri(c(al)?|cs)\s*(video)?\s*$"
+    r"\s+with\s+lyrics?\b.*$"               # "with lyrics / with lyric"
+    r"|\s+lyri(c(al)?|cs)\s*(video)?\s*$"   # "lyric video", "lyrics"
     r"|\s+official\s+(video|audio|music\s+video)?\s*$"
-    r"|\s+\d{4}\s*$"
-    r"|\s+(hd|4k|full\s+song)\s*$",
+    r"|\s+\d{4}\s*$"                         # trailing year
+    r"|\s+(hd|4k|full\s+song)\s*$"
+    r"|\s+(unplugged|acoustic|live|version|remix|mix|cover|mashup|reprise)\b.*$"
+    r"|\s+(season|vol\.?|volume|part|ep\.?)\s*\d+\b.*$",
     re.I,
 )
+
+# _YT_NOISE_RE — individual noise words scattered through the title.
 _YT_NOISE_RE   = re.compile(
     r"\b(topic|vevo|official|records?|music|ghazals?|lyrical|lyrics?|video|audio"
-    r"|romantic|sad|old|hits?|song|full|hd|4k|ft\.?|feat\.?)\b",
+    r"|romantic|sad|old|hits?|song|full|hd|4k|ft\.?|feat\."
+    r"|remaster(?:ed)?|new|latest|punjabi|hindi|bollywood|dj|club)\b",
     re.I,
 )
+
+# Strip "ft. / feat. / featuring <collaborator>" before normalisation.
+_YT_FT_RE = re.compile(r"\s+(ft\.?|feat\.?|featuring)\s+\w.*$", re.I)
 
 
 def _norm_yt_title(s: str) -> str:
     """
     Aggressively normalise a raw YouTube/playlist title to its core song name.
 
-    1. Take only the part before the first pipe — channel/label noise follows.
-    2. Strip trailing appended phrases (with lyrics, lyrical video, etc).
-    3. Drop parenthetical / bracketed suffixes.
-    4. Remove YouTube noise words that never appear in a clean song title.
-    5. Lowercase and collapse whitespace.
+    Processing order is deliberate:
+    1. Pipe-strip  — drop channel/label/artist labels after the first '|'
+    2. Paren-strip — drop "(Official Video)", "(Live Version)", "(2024)" etc
+       BEFORE suffix-strip so patterns like "(Live Version)" are handled by
+       the paren rule rather than needing a separate suffix entry
+    3. Suffix-strip — drop trailing decoration: "unplugged", "remix", "Season 2" …
+    4. Noise-word removal — scattered words like "official", "full", "bollywood" …
+    5. Punctuation collapse + lowercase
     """
     s = (s or "").strip()
     s = _YT_PIPE_RE.sub("", s).strip()
+    s = re.sub(r"\s*[\(\[].*?[\)\]]", "", s)   # parens BEFORE suffix
     s = _YT_SUFFIX_RE.sub("", s).strip()
-    s = re.sub(r"\s*[\(\[].*?[\)\]]", "", s)
     s = _YT_NOISE_RE.sub(" ", s)
     s = re.sub(r"[^\w\s]", " ", s)
     return re.sub(r"\s+", " ", s).lower().strip()
+
+
+def _is_mostly_latin(s: str) -> bool:
+    """Return True when the string is predominantly Latin-script characters."""
+    import unicodedata
+    latin = sum(1 for c in s if unicodedata.category(c).startswith("L") and ord(c) < 0x0400)
+    total = sum(1 for c in s if unicodedata.category(c).startswith("L"))
+    return total > 0 and (latin / total) > 0.5
+
+
+def _norm_yt_title_variants(s: str, artist: str = "") -> list[str]:
+    """
+    Return a ranked list of normalised title variants to try when matching.
+
+    Each variant attempts to recover the bare song name from a noisy YouTube
+    title by removing a different class of uploader-added decoration.
+
+    V1 — full norm          Primary normalised title (always present).
+    V2 — pre-dash           "Song - Movie/Album | …"  →  "song"
+                            Very common in Bollywood: "Pardesiya - Param Sundari"
+    V3 — ft-strip           "Song Ft. ColabArtist …"  →  "song"
+                            Strips from the first ft./feat./featuring token
+                            before normalisation so the collaborator name is
+                            never included in the result.
+    V4 — post-dash          "New Hindi Song 2024 - Tere Bina"  →  "tere bina"
+                            When the pre-dash segment is pure noise (empty after
+                            normalisation), try the segment AFTER the dash instead.
+    V5 — artist-strip       "SOFTLY KARAN AUJLA | IKKY | …"  →  "softly"
+                            When the uploader (channel) name appears verbatim in
+                            the normalised title, strip it out.
+    V6 — lib-artist-strip   Dynamic per cache-entry: strips the library track's
+                            own artist name from the query title.
+                            "Channa Mereya Arijit Singh" + lib artist "Arijit Singh"
+                            →  "channa mereya"
+                            (computed inside _cache_has_track, not here)
+    V7 — non-Latin fallback "कल चौदहवीं | Kal Chaudhvin Ki Raat Thi | …"
+                            When the first pipe-segment is non-Latin script,
+                            iterate subsequent segments for a Latin one.
+    V8 — first-words        Last-resort for very long titles (>4 tokens after all
+                            normalisation): try just the first 3 tokens.
+                            "Lag Ja Gale Lata Mangeshkar Woh Kaun Thi"  →  "lag ja gale"
+    """
+    full = _norm_yt_title(s)
+    variants: list[str] = [full]
+    s_raw = (s or "").strip()
+
+    def _add(v: str) -> None:
+        if v and v not in variants:
+            variants.append(v)
+
+    # V2 — pre-dash
+    s_piped = _YT_PIPE_RE.sub("", s_raw).strip()
+    if " - " in s_piped:
+        parts   = s_piped.split(" - ", 1)
+        pre     = _norm_yt_title(parts[0])
+        post    = _norm_yt_title(parts[1]) if len(parts) > 1 else ""
+        if pre:
+            _add(pre)
+            # V4 — post-dash (when pre-dash is all noise)
+        if not pre and post:
+            _add(post)          # V4 direct
+        elif pre and post:
+            _add(post)          # V4 as additional candidate
+
+    # V3 — ft/feat collaborator strip (before normalisation)
+    ft_stripped = _YT_FT_RE.sub("", s_piped).strip()
+    if ft_stripped != s_piped:
+        _add(_norm_yt_title(ft_stripped))
+
+    # V5 — uploader/channel artist strip from full norm
+    if artist:
+        norm_artist = _norm_dedup(artist)
+        if norm_artist and norm_artist in full:
+            _add(re.sub(r"\s+", " ", re.sub(re.escape(norm_artist), " ", full)).strip())
+
+    # V7 — non-Latin first segment → scan for Latin segment
+    all_segs = [seg.strip() for seg in _YT_PIPE_SPLIT_RE.split(s_raw)]
+    if all_segs and not _is_mostly_latin(all_segs[0]):
+        for seg in all_segs[1:]:
+            if _is_mostly_latin(seg):
+                _add(_norm_yt_title(seg))
+                break
+
+    # V8 — first-3-words fallback for very long normalised titles
+    tokens = full.split()
+    if len(tokens) > 4:
+        _add(" ".join(tokens[:3]))
+
+    return variants
 
 
 def _find_duplicates(tracks: list[dict]) -> list[list[dict]]:
@@ -1205,15 +1394,25 @@ def _run_dedup_blocking() -> dict:
             try:
                 p = Path(path_str)
                 if p.exists():
-                    p.unlink()
+                    # Move to _Trash instead of hard-delete — allows manual recovery
+                    trash_dir = OUTPUT_DIR / "_Trash"
+                    trash_dir.mkdir(parents=True, exist_ok=True)
+                    trash_dest = trash_dir / p.name
+                    # Avoid name collision in trash
+                    if trash_dest.exists():
+                        import time as _time
+                        stem, suf = p.stem, p.suffix
+                        trash_dest = trash_dir / f"{stem}_{int(_time.time())}{suf}"
+                    import shutil as _sh
+                    _sh.move(str(p), str(trash_dest))
                     deleted_paths.append(path_str)
                     deleted_ids.add(dup["id"])
-                    logger.info("[dedup] Deleted newer duplicate: %s", path_str)
+                    logger.info("[dedup] Moved to trash: %s → %s", path_str, trash_dest)
                 else:
                     logger.warning("[dedup] Already gone: %s", path_str)
                     deleted_ids.add(dup["id"])
             except Exception as e:
-                msg = f"Could not delete {path_str}: {e}"
+                msg = f"Could not trash {path_str}: {e}"
                 errors.append(msg)
                 logger.error("[dedup] %s", msg)
 
@@ -1315,6 +1514,8 @@ async def _run_autotag_batch(track_list: list[dict]):
     Shared autotag worker used by both autotag-all and autotag-untagged.
     Broadcasts autotag_start / autotag_progress / autotag_log / autotag_done events.
     """
+    global _autotag_running
+    _autotag_running = True
     from app.library import full_autotag_track, apply_metadata_and_reorganize, read_track_meta
     loop         = asyncio.get_running_loop()
     acoustid_key = cfg().get("acoustid_key", "")
@@ -1340,6 +1541,8 @@ async def _run_autotag_batch(track_list: list[dict]):
             skipped += 1
             continue
 
+        old_path_str = str(path)
+
         def _do(p=path, m=meta, ak=acoustid_key, fl=do_lyrics):
             new_meta, cover, logs = full_autotag_track(p, m, acoustid_key=ak, fetch_lyrics=fl)
             if not new_meta:
@@ -1353,8 +1556,11 @@ async def _run_autotag_batch(track_list: list[dict]):
             for k in ("title", "artist", "albumartist", "album", "year", "track"):
                 if new_meta.get(k):
                     updated[k] = new_meta[k]
+            # Keep the real new path and its derived ID (MD5 of new path).
+            # Do NOT forcibly overwrite updated["id"] with the stale old-path ID —
+            # that caused cache mismatches whenever the file was renamed.
             updated["path"] = str(new_path)
-            updated["id"]   = m["id"]
+            updated["id"]   = updated.get("id") or m["id"]
             return updated, logs
 
         updated, logs = await loop.run_in_executor(None, _do)
@@ -1362,16 +1568,27 @@ async def _run_autotag_batch(track_list: list[dict]):
         await lib_broadcast({"type": "autotag_log", "tid": tid, "logs": logs})
 
         if updated:
-            library_index[tid] = updated
+            new_id = updated["id"]
+            # Keep both old and new IDs in the index.
+            library_index[tid]    = updated
+            library_index[new_id] = updated
+            # Match by OLD PATH — ID-based matching fails when the file was
+            # renamed because read_track_meta() derives a new MD5 from the new path.
+            replaced = False
             for j, t in enumerate(library_cache):
-                if t["id"] == tid:
+                if t["id"] == tid or t.get("path") == old_path_str:
                     library_cache[j] = updated
+                    replaced = True
                     break
+            if not replaced:
+                # Not yet in the cache — append so the untagged count is correct.
+                library_cache.append(updated)
             await lib_broadcast({"type": "track_updated", "track": updated})
             done += 1
         else:
             failed += 1
 
+    _autotag_running = False
     await lib_broadcast({
         "type": "autotag_done",
         "count": total, "done": done, "failed": failed, "skipped": skipped,
@@ -1440,8 +1657,11 @@ async def library_dedup_preview():
 @app.post("/api/library/autotag-all")
 async def library_autotag_all():
     """Auto-tag every track in the library."""
+    global _autotag_running
     if lib_scan_status["running"]:
         return {"error": "Scan running, wait for it to finish"}
+    if _autotag_running:
+        return {"error": "Autotag already running"}
     track_list = list(library_cache)
     asyncio.ensure_future(_run_autotag_batch(track_list))
     return {"ok": True, "total": len(track_list)}
@@ -1454,8 +1674,11 @@ async def library_autotag_untagged():
     Respects the untagged_new_days setting — only new tracks are included
     unless untagged_new_days is 0 (meaning all time).
     """
+    global _autotag_running
     if lib_scan_status["running"]:
         return {"error": "Scan running, wait for it to finish"}
+    if _autotag_running:
+        return {"error": "Autotag already running"}
     untagged = _untagged_tracks()
     if not untagged:
         return {"ok": True, "total": 0, "message": "No untagged tracks found"}
@@ -1773,49 +1996,49 @@ async def library_duplicates():
     if not library_cache:
         return {"groups": []}
 
-    def _norm(s: str) -> str:
-        import re as _re, unicodedata as _ud
-        s = _ud.normalize("NFC", s.lower())
-        s = _re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", s)   # strip (feat. …) [live] …
-        s = _re.sub(r"[^\w\s]", "", s)
-        return " ".join(s.split())
+    def _compute(tracks: list[dict]) -> list:
+        import unicodedata as _ud
 
-    tracks = list(library_cache)
-    groups: list[list[dict]] = []
-    used: set[str] = set()
+        def _norm(s: str) -> str:
+            s = _ud.normalize("NFC", s.lower())
+            s = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", s)
+            s = re.sub(r"[^\w\s]", "", s)
+            return " ".join(s.split())
 
-    for i, a in enumerate(tracks):
-        if a["id"] in used:
-            continue
-        norm_a = _norm(a.get("title", ""))
-        dur_a  = int(a.get("duration", 0) or 0)
-        group  = []
-
-        for j, b in enumerate(tracks):
-            if i == j or b["id"] in used:
+        groups: list[list[dict]] = []
+        used: set[str] = set()
+        for i, a in enumerate(tracks):
+            if a["id"] in used:
                 continue
-            norm_b = _norm(b.get("title", ""))
-            dur_b  = int(b.get("duration", 0) or 0)
-            dur_diff = abs(dur_a - dur_b)
+            norm_a = _norm(a.get("title", ""))
+            dur_a  = int(a.get("duration", 0) or 0)
+            group  = []
+            for j, b in enumerate(tracks):
+                if i == j or b["id"] in used:
+                    continue
+                norm_b = _norm(b.get("title", ""))
+                dur_b  = int(b.get("duration", 0) or 0)
+                dur_diff = abs(dur_a - dur_b)
+                reason = None
+                if norm_a == norm_b and dur_diff <= 10:
+                    reason = "exact title match"
+                elif norm_a and norm_b and dur_diff <= 5:
+                    ratio = _lev_ratio(norm_a, norm_b)
+                    if ratio >= 0.85:
+                        reason = f"similar title ({int(ratio*100)}%)"
+                if reason:
+                    if not group:
+                        group.append({**a, "dup_reason": "original"})
+                        used.add(a["id"])
+                    group.append({**b, "dup_reason": reason})
+                    used.add(b["id"])
+            if len(group) > 1:
+                groups.append(group)
+        return groups
 
-            reason = None
-            if norm_a == norm_b and dur_diff <= 10:
-                reason = "exact title match"
-            elif norm_a and norm_b and dur_diff <= 5:
-                ratio = _lev_ratio(norm_a, norm_b)
-                if ratio >= 0.85:
-                    reason = f"similar title ({int(ratio*100)}%)"
-
-            if reason:
-                if not group:
-                    group.append({**a, "dup_reason": "original"})
-                    used.add(a["id"])
-                group.append({**b, "dup_reason": reason})
-                used.add(b["id"])
-
-        if len(group) > 1:
-            groups.append(group)
-
+    loop   = asyncio.get_running_loop()
+    tracks = list(library_cache)
+    groups = await loop.run_in_executor(None, _compute, tracks)
     return {"groups": groups}
 
 
@@ -1864,50 +2087,50 @@ async def library_artist_groups():
     if not library_cache:
         return {"groups": []}
 
-    import re as _re, unicodedata as _ud
+    import unicodedata as _ud
 
-    def _norm_artist(s: str) -> str:
-        s = _ud.normalize("NFC", s.lower())
-        s = _re.sub(r"^(the |dj |mc |dj\.)\s*", "", s)
-        s = _re.sub(r"[^\w\s]", "", s)
-        return " ".join(s.split())
+    def _compute_groups(tracks: list[dict]) -> list:
+        def _norm_artist(s: str) -> str:
+            s = _ud.normalize("NFC", s.lower())
+            s = re.sub(r"^(the |dj |mc |dj\.)\s*", "", s)
+            s = re.sub(r"[^\w\s]", "", s)
+            return " ".join(s.split())
 
-    # Build per-artist-folder index
-    artist_map: dict[str, dict] = {}
-    for t in library_cache:
-        folder  = t.get("folder", "")
-        artist  = t.get("artist") or t.get("albumartist") or Path(folder).name
-        key     = folder
-        if key not in artist_map:
-            artist_map[key] = {"name": artist, "folder": folder, "track_ids": [], "track_count": 0}
-        artist_map[key]["track_ids"].append(t["id"])
-        artist_map[key]["track_count"] += 1
+        artist_map: dict[str, dict] = {}
+        for t in tracks:
+            folder = t.get("folder", "")
+            artist = t.get("artist") or t.get("albumartist") or Path(folder).name
+            if folder not in artist_map:
+                artist_map[folder] = {"name": artist, "folder": folder, "track_ids": [], "track_count": 0}
+            artist_map[folder]["track_ids"].append(t["id"])
+            artist_map[folder]["track_count"] += 1
 
-    artists = list(artist_map.values())
-    groups: list[list[dict]] = []
-    used: set[str] = set()
-
-    for i, a in enumerate(artists):
-        if a["folder"] in used:
-            continue
-        norm_a = _norm_artist(a["name"])
-        group  = [a]
-        used.add(a["folder"])
-
-        for j, b in enumerate(artists):
-            if i == j or b["folder"] in used:
+        artists = list(artist_map.values())
+        groups: list[list[dict]] = []
+        used: set[str] = set()
+        for i, a in enumerate(artists):
+            if a["folder"] in used:
                 continue
-            norm_b = _norm_artist(b["name"])
-            if norm_a == norm_b:
-                group.append(b)
-                used.add(b["folder"])
-            elif norm_a and norm_b and _lev_ratio(norm_a, norm_b) >= 0.82:
-                group.append(b)
-                used.add(b["folder"])
+            norm_a = _norm_artist(a["name"])
+            group  = [a]
+            used.add(a["folder"])
+            for j, b in enumerate(artists):
+                if i == j or b["folder"] in used:
+                    continue
+                norm_b = _norm_artist(b["name"])
+                if norm_a == norm_b:
+                    group.append(b)
+                    used.add(b["folder"])
+                elif norm_a and norm_b and _lev_ratio(norm_a, norm_b) >= 0.82:
+                    group.append(b)
+                    used.add(b["folder"])
+            if len(group) > 1:
+                groups.append(group)
+        return groups
 
-        if len(group) > 1:
-            groups.append(group)
-
+    loop   = asyncio.get_running_loop()
+    tracks = list(library_cache)
+    groups = await loop.run_in_executor(None, _compute_groups, tracks)
     return {"groups": groups}
 
 
@@ -1953,6 +2176,15 @@ async def library_merge_artists(request: Request):
         _errs_inner:  list[str] = []
         for src_folder in source_folders:
             src_path = Path(src_folder)
+            # Security: reject any path not under OUTPUT_DIR (path traversal guard)
+            try:
+                resolved = src_path.resolve()
+                if not str(resolved).startswith(str(OUTPUT_DIR.resolve()) + "/"):
+                    _errs_inner.append(f"Rejected: path outside music library: {src_folder}")
+                    continue
+            except Exception:
+                _errs_inner.append(f"Invalid path: {src_folder}")
+                continue
             # Skip if source IS the target (same resolved path) — avoids self-move
             try:
                 if src_path.resolve() == target_dir.resolve():

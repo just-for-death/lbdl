@@ -58,19 +58,35 @@ def _fetch_lyrics_enabled() -> bool:
 # ── Processed-tracks log (flat JSON, replaces Redis) ─────────────────────────
 
 def _load_processed() -> dict:
+    """Read processed.json with a shared lock — safe for concurrent readers."""
+    import fcntl
     try:
         if PROCESSED_FILE.exists():
             with open(PROCESSED_FILE) as f:
-                return json.load(f)
+                fcntl.flock(f, fcntl.LOCK_SH)
+                try:
+                    return json.load(f)
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
     except Exception:
         pass
     return {}
 
 
 def _save_processed(data: dict) -> None:
+    """Write processed.json atomically to prevent corruption from concurrent cron runs."""
+    import fcntl
     try:
-        with open(PROCESSED_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        tmp = Path(str(PROCESSED_FILE) + ".tmp")
+        with open(tmp, "w") as f:
+            # Acquire exclusive lock before writing
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                json.dump(data, f, indent=2)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        # Atomic replace
+        tmp.replace(PROCESSED_FILE)
     except Exception as e:
         logger.warning("Could not save processed.json: %s", e)
 

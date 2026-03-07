@@ -24,8 +24,7 @@ from pathlib import Path
 
 import aio_pika
 from app.library import (
-    autotag_track, apply_metadata_and_reorganize, read_track_meta,
-    _gate_candidate,
+    full_autotag_track, apply_metadata_and_reorganize, read_track_meta,
 )
 from shared_queue import (
     QueueManager,
@@ -63,96 +62,56 @@ def _get_acoustid_key() -> str:
 
 # ── Metadata Fetcher (runs in thread pool) ──────────────────────────────────────
 
-def fetch_metadata(file_path: str, task: TaggingTask) -> tuple[dict | None, bytes | None]:
+def fetch_metadata(file_path: str, task: TaggingTask) -> tuple[dict | None, bytes | None, list[str]]:
     """
-    Fetch metadata for a track.
-    
-    Returns: (metadata_dict, cover_bytes) or (None, None) on failure
-    """
-    from app.library import (
-        _mb_text_search,
-        _parse_mb_rec,
-        _cover_url_from_caa,
-        _fetch_cover_from_url,
-        _itunes_candidates,
-    )
+    Fetch metadata for a track using the full pipeline (iTunes → MusicBrainz → AcoustID).
 
+    Uses full_autotag_track which tries all sources in priority order and fetches
+    lyrics when enabled — identical pipeline to the API's inline autotag path.
+
+    Returns: (metadata_dict, cover_bytes, log_lines) or (None, None, logs) on failure
+    """
+    import json as _json
     try:
-        # 1. Try AcoustID fingerprinting first (most reliable)
+        settings_path = CONFIG_DIR / "settings.json"
         acoustid_key = _get_acoustid_key()
-        logger.debug("[%s] Attempting AcoustID fingerprint (key=%s)", task.track_id, "set" if acoustid_key else "missing")
-        metadata, cover = autotag_track(file_path, acoustid_key=acoustid_key)
-        if metadata:
-            # AcoustID found metadata — use it even if cover is missing
-            if not cover:
-                # Try iTunes as cover fallback using the confirmed metadata
-                logger.debug("[%s] AcoustID found metadata but no cover — trying iTunes cover", task.track_id)
-                itunes = _itunes_candidates(
-                    metadata.get("artist", task.artist),
-                    metadata.get("title", task.title),
-                    limit=1,
-                )
-                if itunes and itunes[0].get("cover_url"):
-                    cover = _fetch_cover_from_url(itunes[0]["cover_url"])
-            logger.info("[%s] Found via AcoustID: %s - %s", task.track_id, metadata.get("artist"), metadata.get("title"))
-            return metadata, cover
+        do_lyrics = True
+        try:
+            if settings_path.exists():
+                with open(settings_path) as f:
+                    s = _json.load(f)
+                do_lyrics = bool(s.get("fetch_lyrics", True))
+        except Exception:
+            pass
 
-        # 2. AcoustID returned nothing — fall back to MusicBrainz text search
-        logger.debug("[%s] AcoustID found nothing, trying MusicBrainz text search", task.track_id)
-        search_artist = task.artist
-        search_title  = task.title
-        
-        mb_recs = _mb_text_search(search_artist, search_title, limit=6)
-        if mb_recs:
-            rec = mb_recs[0]
-            parsed = _parse_mb_rec(rec, source="musicbrainz")
-            if parsed:
-                accepted, gate_reason = _gate_candidate(search_artist, search_title, parsed, label="MB/tagger")
-                if accepted:
-                    logger.info("[%s] Found via MusicBrainz [%s]: %s", task.track_id, gate_reason, parsed.get("title"))
-                    cover = None
-                    if parsed.get("mb_rel_id"):
-                        caa_url = _cover_url_from_caa(parsed["mb_rel_id"])
-                        cover = _fetch_cover_from_url(caa_url)
-                    return parsed, cover
-                else:
-                    logger.info("[%s] MusicBrainz rejected [%s]: %s — %s", task.track_id, gate_reason, parsed.get("artist"), parsed.get("title"))
-
-        # 3. Final fallback: iTunes search for cover art
-        logger.debug("[%s] Trying iTunes for metadata", task.track_id)
-        itunes = _itunes_candidates(search_artist, search_title, limit=1)
-        if itunes:
-            candidate = itunes[0]
-            accepted, gate_reason = _gate_candidate(search_artist, search_title, candidate, label="iTunes/tagger")
-            if accepted:
-                cover = None
-                if candidate.get("cover_url"):
-                    cover = _fetch_cover_from_url(candidate["cover_url"])
-                metadata = {
-                    "artist": candidate.get("artist", search_artist),
-                    "title": candidate.get("title", search_title),
-                    "album": candidate.get("album", ""),
-                    "year": candidate.get("year", ""),
-                    "albumartist": candidate.get("artist", search_artist),
-                }
-                logger.info("[%s] Found via iTunes [%s]: %s", task.track_id, gate_reason, metadata.get("title"))
-                return metadata, cover
-            else:
-                logger.info("[%s] iTunes rejected [%s]: %s — %s", task.track_id, gate_reason, candidate.get("artist"), candidate.get("title"))
-
-        # If all fails, return what we have
-        logger.warning("[%s] No metadata found, using provided info", task.track_id)
-        return {
+        seed_meta = {
             "artist": task.artist,
-            "title": task.title,
-            "album": task.album,
-            "album_artist": task.album_artist,
-            "year": task.year,
-        }, None
+            "title":  task.title,
+            "album":  task.album,
+            "year":   task.year,
+        }
+        new_meta, cover, logs = full_autotag_track(
+            file_path, seed_meta,
+            acoustid_key=acoustid_key,
+            fetch_lyrics=do_lyrics,
+        )
+        if new_meta:
+            logger.info("[%s] Tagged: %s — %s", task.track_id, new_meta.get("artist"), new_meta.get("title"))
+            return new_meta, cover, logs
+
+        # full_autotag_track returned nothing — fall back to task metadata
+        logger.warning("[%s] No metadata found via full pipeline, using task info", task.track_id)
+        return {
+            "artist":      task.artist,
+            "title":       task.title,
+            "album":       task.album,
+            "albumartist": task.album_artist,
+            "year":        task.year,
+        }, None, logs
 
     except Exception as e:
         logger.error("[%s] Metadata fetch error: %s", task.track_id, e, exc_info=True)
-        return None, None
+        return None, None, [f"Exception: {e}"]
 
 
 # ── Tagging Worker ────────────────────────────────────────────────────────────
@@ -173,9 +132,11 @@ async def process_tagging_task(
     try:
         # Fetch metadata in thread pool (blocking operations)
         loop = asyncio.get_running_loop()
-        metadata, cover = await loop.run_in_executor(
+        metadata, cover, tag_logs = await loop.run_in_executor(
             None, fetch_metadata, str(file_path), task
         )
+        for line in (tag_logs or []):
+            logger.debug("[%s] %s", task.track_id, line)
 
         if not metadata:
             error_msg = "Failed to fetch metadata"
