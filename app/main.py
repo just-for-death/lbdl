@@ -232,6 +232,7 @@ class Job:
     status:             JobStatus = JobStatus.QUEUED
     tracks:             list[Track] = field(default_factory=list)
     logs:               list[str]   = field(default_factory=list)
+    created_at:         float = field(default_factory=time.time)
 
 
 jobs:        dict[str, Job]             = {}
@@ -249,7 +250,7 @@ def _evict_old_jobs() -> None:
         (jid, j) for jid, j in jobs.items()
         if j.status in (JobStatus.DONE, JobStatus.ERROR)
     ]
-    # Sort oldest first — job.id is a UUID but we can approximate by insertion order
+    finished.sort(key=lambda item: item[1].created_at)
     to_remove = len(jobs) - _MAX_JOBS
     for jid, _ in finished[:to_remove]:
         jobs.pop(jid, None)
