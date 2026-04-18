@@ -42,6 +42,20 @@ _ENV_CRON          = os.getenv("LBDL_SCHEDULER_CRON",         "0 */2 * * *")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def _resolve_static_dir() -> Path:
+    """Serve static files from repo `static/` in dev, `/app/static` in Docker, or LBDL_STATIC_DIR."""
+    env = (os.getenv("LBDL_STATIC_DIR") or "").strip()
+    if env:
+        return Path(env)
+    repo = Path(__file__).resolve().parent.parent / "static"
+    if repo.is_dir():
+        return repo
+    return Path("/app/static")
+
+
+STATIC_DIR = _resolve_static_dir()
+
 PLAYLISTS_FILE = CONFIG_DIR / "playlists.json"
 SETTINGS_FILE  = CONFIG_DIR / "settings.json"
 
@@ -682,6 +696,7 @@ async def worker():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    auth_module.ensure_auth_file()
     removed = cleanup_part_files()
     if removed:
         logging.getLogger(__name__).info("Startup: removed %d stale .part file(s)", removed)
@@ -695,8 +710,6 @@ app = FastAPI(title="lbdl", lifespan=lifespan)
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if not auth_module.auth_enabled():
-        return await call_next(request)
     if auth_module.is_public_path(request.url.path):
         return await call_next(request)
     if auth_module.verify_request(request):
@@ -704,11 +717,11 @@ async def auth_middleware(request: Request, call_next):
     return JSONResponse(
         status_code=401,
         content={"detail": "Unauthorized", "auth_required": True},
-        headers={"WWW-Authenticate": 'Bearer realm="lbdl"'},
+        headers={"WWW-Authenticate": 'Basic realm="lbdl"'},
     )
 
 
-app.mount("/static", StaticFiles(directory="/app/static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # ── PWA routes (served at root so service-worker scope covers the whole app) ──
@@ -717,7 +730,7 @@ app.mount("/static", StaticFiles(directory="/app/static"), name="static")
 async def service_worker():
     """Serve SW from root so its scope covers '/'."""
     return FileResponse(
-        "/app/static/sw.js",
+        str(STATIC_DIR / "sw.js"),
         media_type="application/javascript",
         headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
     )
@@ -725,7 +738,7 @@ async def service_worker():
 
 @app.get("/manifest.json", include_in_schema=False)
 async def manifest():
-    return FileResponse("/app/static/manifest.json", media_type="application/manifest+json")
+    return FileResponse(str(STATIC_DIR / "manifest.json"), media_type="application/manifest+json")
 
 
 # ── iOS / iPadOS icon probing ─────────────────────────────────────────────────
@@ -735,69 +748,73 @@ async def manifest():
 @app.get("/apple-touch-icon.png", include_in_schema=False)
 @app.get("/apple-touch-icon-precomposed.png", include_in_schema=False)
 async def apple_touch_icon():
-    return FileResponse("/app/static/icon-180.png", media_type="image/png",
+    return FileResponse(str(STATIC_DIR / "icon-180.png"), media_type="image/png",
                         headers={"Cache-Control": "public, max-age=604800"})
 
 @app.get("/apple-touch-icon-180x180.png", include_in_schema=False)
 @app.get("/apple-touch-icon-180x180-precomposed.png", include_in_schema=False)
 async def apple_touch_icon_180():
-    return FileResponse("/app/static/icon-180.png", media_type="image/png",
+    return FileResponse(str(STATIC_DIR / "icon-180.png"), media_type="image/png",
                         headers={"Cache-Control": "public, max-age=604800"})
 
 @app.get("/apple-touch-icon-167x167.png", include_in_schema=False)
 @app.get("/apple-touch-icon-167x167-precomposed.png", include_in_schema=False)
 async def apple_touch_icon_167():
-    return FileResponse("/app/static/icon-167.png", media_type="image/png",
+    return FileResponse(str(STATIC_DIR / "icon-167.png"), media_type="image/png",
                         headers={"Cache-Control": "public, max-age=604800"})
 
 @app.get("/apple-touch-icon-152x152.png", include_in_schema=False)
 @app.get("/apple-touch-icon-152x152-precomposed.png", include_in_schema=False)
 async def apple_touch_icon_152():
-    return FileResponse("/app/static/icon-152.png", media_type="image/png",
+    return FileResponse(str(STATIC_DIR / "icon-152.png"), media_type="image/png",
                         headers={"Cache-Control": "public, max-age=604800"})
 
 @app.get("/apple-touch-icon-120x120.png", include_in_schema=False)
 @app.get("/apple-touch-icon-120x120-precomposed.png", include_in_schema=False)
 async def apple_touch_icon_120():
-    return FileResponse("/app/static/icon-120.png", media_type="image/png",
+    return FileResponse(str(STATIC_DIR / "icon-120.png"), media_type="image/png",
                         headers={"Cache-Control": "public, max-age=604800"})
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    return FileResponse("/app/static/favicon.ico", media_type="image/x-icon",
+    return FileResponse(str(STATIC_DIR / "favicon.ico"), media_type="image/x-icon",
                         headers={"Cache-Control": "public, max-age=604800"})
 
 
-# ── Auth (cookie + Bearer) ────────────────────────────────────────────────────
+# ── Auth (HTTP Basic + session cookie) ───────────────────────────────────────
 
 @app.get("/api/auth/status")
 async def auth_status(request: Request):
-    """Whether auth is required and whether this request is authenticated."""
-    en = auth_module.auth_enabled()
+    """Login state and configured username (when authenticated)."""
+    ok = auth_module.verify_request(request)
+    uname = None
+    if ok:
+        try:
+            uname = auth_module.load_auth().get("username")
+        except Exception:
+            uname = None
     return {
-        "auth_enabled": en,
-        "authenticated": auth_module.verify_request(request) if en else True,
+        "auth_enabled": auth_module.auth_enabled(),
+        "authenticated": ok,
+        "username": uname,
     }
 
 
 @app.post("/api/auth/login")
 async def auth_login(request: Request):
-    """Validate API token and set HttpOnly session cookie (browser clients)."""
-    if not auth_module.auth_enabled():
-        return {"ok": True, "message": "Authentication not configured"}
+    """Validate username/password and set HttpOnly session cookie."""
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
-    token = (body.get("token") or "").strip()
-    if not auth_module.verify_token_string(token):
-        return JSONResponse({"ok": False, "error": "Invalid token"}, status_code=401)
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if not auth_module.verify_credentials(username, password):
+        return JSONResponse({"ok": False, "error": "Invalid username or password"}, status_code=401)
     resp = JSONResponse({"ok": True})
-    exp = auth_module.get_api_token()
-    assert exp is not None
     resp.set_cookie(
         auth_module.AUTH_COOKIE,
-        auth_module.session_cookie_value(exp),
+        auth_module.make_session_cookie_value(username),
         httponly=True,
         samesite="lax",
         max_age=60 * 60 * 24 * 365,
@@ -810,7 +827,40 @@ async def auth_login(request: Request):
 @app.post("/api/auth/logout")
 async def auth_logout():
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(auth_module.AUTH_COOKIE, path="/")
+    resp.delete_cookie(
+        auth_module.AUTH_COOKIE,
+        path="/",
+        secure=auth_module.cookie_secure_flag(),
+        httponly=True,
+        samesite="lax",
+    )
+    return resp
+
+
+@app.post("/api/auth/change-password")
+async def auth_change_password(request: Request):
+    """Change password (requires current session or Basic auth)."""
+    if not auth_module.verify_request(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    cur = body.get("current_password") or ""
+    new = body.get("new_password") or ""
+    ok, err = auth_module.change_password(cur, new)
+    if not ok:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        auth_module.AUTH_COOKIE,
+        auth_module.make_session_cookie_value(auth_module.load_auth()["username"]),
+        httponly=True,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 365,
+        secure=auth_module.cookie_secure_flag(),
+        path="/",
+    )
     return resp
 
 
@@ -2252,7 +2302,9 @@ async def library_merge_artists(request: Request):
             # Security: reject any path not under OUTPUT_DIR (path traversal guard)
             try:
                 resolved = src_path.resolve()
-                if not str(resolved).startswith(str(OUTPUT_DIR.resolve()) + "/"):
+                root = OUTPUT_DIR.resolve()
+                # is_relative_to(root) allows the library root itself, not only subpaths
+                if not resolved.is_relative_to(root):
                     _errs_inner.append(f"Rejected: path outside music library: {src_folder}")
                     continue
             except Exception:
@@ -2350,7 +2402,7 @@ async def api_status():
 
 @app.get("/")
 async def index():
-    return FileResponse("/app/static/index.html")
+    return FileResponse(str(STATIC_DIR / "index.html"))
 
 
 def custom_openapi():
@@ -2362,15 +2414,16 @@ def custom_openapi():
         title=app.title,
         version="2.0",
         description=(
-            "When `LBDL_API_TOKEN` is set, send `Authorization: Bearer <token>` on API requests "
-            "and WebSocket handshakes (or use `?token=` on WebSockets). The web UI uses a session cookie after sign-in."
+            "Use HTTP Basic auth (`Authorization: Basic` with base64 `username:password`) on every `/api/*` request "
+            "and WebSocket handshake. Default credentials are created on first run as **admin** / **admin** — change the password under **Settings → Account**. "
+            "The web UI uses a session cookie after sign-in."
         ),
         routes=app.routes,
     )
-    openapi_schema.setdefault("components", {}).setdefault("securitySchemes", {})["Bearer"] = {
+    openapi_schema.setdefault("components", {}).setdefault("securitySchemes", {})["HTTPBasic"] = {
         "type": "http",
-        "scheme": "bearer",
-        "description": "Same value as the `LBDL_API_TOKEN` environment variable.",
+        "scheme": "basic",
+        "description": "Same username and password as the web UI (stored hashed in config/auth.json).",
     }
     app.openapi_schema = openapi_schema
     return app.openapi_schema

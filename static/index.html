@@ -352,9 +352,11 @@
 <div id="authGate" class="auth-gate">
   <div class="auth-box">
     <div class="auth-title">Sign in</div>
-    <div class="auth-sub">Enter the API token set in <code style="color:var(--accent)">LBDL_API_TOKEN</code> on the server (same value you use as <code style="color:var(--accent)">Authorization: Bearer</code> for scripts).</div>
-    <label class="field-label" for="authTokenInput">API token</label>
-    <input class="inp" id="authTokenInput" type="password" placeholder="Paste token" autocomplete="current-password" spellcheck="false"/>
+    <div class="auth-sub">Default username and password are <code style="color:var(--accent)">admin</code> / <code style="color:var(--accent)">admin</code> until you change them under Settings → Account.</div>
+    <label class="field-label" for="authUserInput">Username</label>
+    <input class="inp" id="authUserInput" type="text" placeholder="admin" autocomplete="username" spellcheck="false"/>
+    <label class="field-label" for="authPassInput" style="margin-top:12px">Password</label>
+    <input class="inp" id="authPassInput" type="password" placeholder="Password" autocomplete="current-password" spellcheck="false"/>
     <div style="margin-top:16px;display:flex;gap:10px;align-items:center">
       <button type="button" class="btn btn-primary" id="authSubmitBtn" onclick="submitAuthLogin()">Continue</button>
     </div>
@@ -439,6 +441,19 @@
   <!-- SETTINGS -->
   <div class="panel" id="tab-settings">
     <div class="settings-grid">
+      <div class="settings-section">
+        <div class="slabel">Account</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:14px">
+          Signed in as <span id="acctUserLabel" style="color:var(--text)">—</span>. Change the password used for the web UI and for <code style="color:var(--accent)">Authorization: Basic</code> API access.
+        </div>
+        <div class="field"><label class="field-label">Current password</label><input class="inp" id="acctCurPw" type="password" autocomplete="current-password" placeholder="Required to change"/></div>
+        <div class="field"><label class="field-label">New password</label><input class="inp" id="acctNewPw" type="password" autocomplete="new-password" placeholder="At least 4 characters"/></div>
+        <div class="field"><label class="field-label">Confirm new password</label><input class="inp" id="acctNewPw2" type="password" autocomplete="new-password"/></div>
+        <div style="display:flex;align-items:center;gap:12px;margin-top:8px">
+          <button type="button" class="btn btn-primary" style="font-size:12px;padding:10px 16px" onclick="submitChangePassword()">Update password</button>
+          <span class="save-status" id="acctPwStatus"></span>
+        </div>
+      </div>
       <div class="settings-section">
         <div class="slabel">ListenBrainz</div>
         <div class="field"><label class="field-label">API Token</label><input class="inp" id="sLbToken" type="password" placeholder="Required for private playlists"/></div>
@@ -530,7 +545,7 @@
 </div>
 
 <script>
-// ── API auth: Bearer + cookie session ───────────────────────────────────────────
+// ── API auth: HTTP Basic + session cookie ───────────────────────────────────────
 async function apiFetch(url, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   if (opts.body && typeof opts.body === 'string' && !headers['Content-Type'] && !headers['content-type']) {
@@ -548,32 +563,33 @@ async function refreshAuthChrome() {
   try {
     const st = await apiFetch('/api/auth/status', { credentials: 'include' }).then(r => r.json());
     const btn = document.getElementById('btnLogout');
-    if (btn) btn.style.display = (st.auth_enabled && st.authenticated) ? 'inline-block' : 'none';
+    if (btn) btn.style.display = st.authenticated ? 'inline-block' : 'none';
   } catch (e) {}
 }
 
 async function submitAuthLogin() {
-  const raw = (document.getElementById('authTokenInput')?.value || '').trim();
+  const user = (document.getElementById('authUserInput')?.value || '').trim();
+  const pass = document.getElementById('authPassInput')?.value || '';
   const err = document.getElementById('authErr');
   const btn = document.getElementById('authSubmitBtn');
   err.textContent = '';
-  if (!raw) { err.textContent = 'Enter a token.'; return; }
+  if (!user) { err.textContent = 'Enter username.'; return; }
   btn.disabled = true;
   try {
     const res = await apiFetch('/api/auth/login', {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: raw }),
+      body: JSON.stringify({ username: user, password: pass }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
-      err.textContent = data.error || 'Invalid token';
+      err.textContent = data.error || 'Invalid username or password';
       btn.disabled = false;
       return;
     }
     document.getElementById('authGate').classList.remove('visible');
-    document.getElementById('authTokenInput').value = '';
+    document.getElementById('authPassInput').value = '';
     await startApp();
     btn.disabled = false;
     refreshAuthChrome();
@@ -583,12 +599,48 @@ async function submitAuthLogin() {
   }
 }
 
+async function updateAccountLabel() {
+  try {
+    const st = await apiFetch('/api/auth/status').then(r => r.json());
+    const el = document.getElementById('acctUserLabel');
+    if (el) el.textContent = st.username || '—';
+  } catch (e) {}
+}
+
+async function submitChangePassword() {
+  const cur = document.getElementById('acctCurPw')?.value || '';
+  const n1 = document.getElementById('acctNewPw')?.value || '';
+  const n2 = document.getElementById('acctNewPw2')?.value || '';
+  const status = document.getElementById('acctPwStatus');
+  if (status) { status.textContent = ''; status.style.color = ''; }
+  if (n1 !== n2) { if (status) { status.textContent = 'New passwords do not match'; status.style.color = 'var(--red)'; } return; }
+  if (n1.length < 4) { if (status) { status.textContent = 'At least 4 characters'; status.style.color = 'var(--red)'; } return; }
+  try {
+    const res = await apiFetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: cur, new_password: n1 }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      if (status) { status.textContent = data.error || 'Failed'; status.style.color = 'var(--red)'; }
+      return;
+    }
+    if (status) { status.textContent = '✓ Password updated'; status.style.color = 'var(--green)'; }
+    document.getElementById('acctCurPw').value = '';
+    document.getElementById('acctNewPw').value = '';
+    document.getElementById('acctNewPw2').value = '';
+  } catch (e) {
+    if (status) { status.textContent = 'Network error'; status.style.color = 'var(--red)'; }
+  }
+}
+
 async function authLogout() {
   try { await apiFetch('/api/auth/logout', { method: 'POST', credentials: 'include' }); } catch (e) {}
   location.reload();
 }
 
-document.getElementById('authTokenInput')?.addEventListener('keydown', e => {
+document.getElementById('authPassInput')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') submitAuthLogin();
 });
 
@@ -615,7 +667,7 @@ const CRON_PRESETS=[{label:'every hour',value:'0 * * * *'},{label:'every 2h',val
 async function init(){
   try {
     const st = await apiFetch('/api/auth/status', { credentials: 'include' }).then(r => r.json());
-    if (st.auth_enabled && !st.authenticated) {
+    if (!st.authenticated) {
       document.getElementById('authGate').classList.add('visible');
       refreshAuthChrome();
       return;
@@ -633,13 +685,14 @@ async function startApp(){
   buildFormatGrid();buildCronPresets();
   document.getElementById('urlInput').addEventListener('keydown',e=>{if(e.key==='Enter')submitJob();});
   document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>switchTab(t.dataset.tab)));
-  await loadSettings();await loadPlaylists();connectLibWs();
+  await loadSettings();await loadPlaylists();await updateAccountLabel();connectLibWs();
 }
 function switchTab(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id===`tab-${name}`));
   if(name==='playlists')loadPlaylists();
   if(name==='library')loadLibraryIfEmpty();
+  if(name==='settings')updateAccountLabel();
 }
 
 // ── Library WebSocket ──────────────────────────────────────────────────────────

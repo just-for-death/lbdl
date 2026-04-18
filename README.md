@@ -101,7 +101,8 @@ docker compose up -d
 | Variable | Default | Description |
 |---|---|---|
 | `LBDL_DATA_DIR` | `/app/music` | Where audio files are stored |
-| `LBDL_CONFIG_DIR` | `/app/config` | Where settings, playlists, cookies live |
+| `LBDL_CONFIG_DIR` | `/app/config` | Where settings, playlists, cookies, `auth.json` live |
+| `LBDL_STATIC_DIR` | *(auto)* | Override path to the `static/` web assets (defaults to repo `static/` in dev, `/app/static` in Docker) |
 | `LBDL_YTDLP_DIR` | `/app/config` | Where `cookies.txt` is read from |
 | `LBDL_AUDIO_FORMAT` | `opus` | yt-dlp output format |
 | `LBDL_AUDIO_QUALITY` | `0` | yt-dlp quality (0 = best) |
@@ -110,25 +111,24 @@ docker compose up -d
 | `LBDL_INVIDIOUS_INSTANCE` | `https://inv.nadeko.net` | Invidious instance to use |
 | `LBDL_ACOUSTID_KEY` | *(empty)* | AcoustID API key for fingerprinting |
 | `LBDL_TZ` | `UTC` | Timezone for cron |
-| `LBDL_API_TOKEN` | *(empty)* | If set, **all** `/api/*` and `/ws/*` require authentication (see below) |
 | `LBDL_COOKIE_SECURE` | *(empty)* | Set to `1` / `true` when the site is served over HTTPS so the login cookie is marked `Secure` |
 
-### Authentication (`LBDL_API_TOKEN`)
+### Authentication (username / password)
 
-When `LBDL_API_TOKEN` is **unset** or **empty**, the API and WebSockets remain open (same as older releases — suitable only on a trusted network).
+On first startup the API creates **`config/auth.json`** with default login **`admin`** / **`admin`**. Change the password under **Settings → Account** in the web UI (recommended before exposing the service).
 
-When set to a long random string:
-
-1. **Web UI** — Opening the app shows a sign-in screen. Paste the same value as the token; the server sets an HttpOnly session cookie so you stay logged in in that browser.
-2. **Scripts / curl** — Send the token on every request:
+1. **Web UI** — Sign-in page; the server sets an HttpOnly session cookie after successful login.
+2. **Scripts / curl** — HTTP Basic auth (same username and password as the UI):
    ```bash
-   curl -sS -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8032/api/status
+   curl -sS -u admin:admin http://localhost:8032/api/status
    ```
-3. **WebSockets** — Browsers send the session cookie automatically after login. Other clients can use:
-   - Header `Authorization: Bearer YOUR_TOKEN` on the WebSocket handshake (if your client supports it), or
-   - Query parameter: `wss://host/ws/library?token=YOUR_TOKEN` (avoid logging full URLs).
+   Or explicitly:
+   ```bash
+   curl -sS -H "Authorization: Basic $(printf 'admin:admin' | base64)" http://localhost:8032/api/status
+   ```
+3. **WebSockets** — Browsers send the session cookie automatically after login. Other clients should send `Authorization: Basic …` on the WebSocket handshake if supported.
 
-Health checks (`GET /health`) and static assets (HTML, icons, `/static/*`, PWA files) stay **unauthenticated** so containers and install prompts still work.
+Credentials are stored **hashed** in `auth.json` inside your config volume. Health checks (`GET /health`) and static assets (HTML, icons, `/static/*`, PWA files) stay **unauthenticated** so containers and install prompts still work.
 
 ---
 
@@ -156,6 +156,19 @@ Optional worker services (started with `--profile workers`):
 | `lbdl-rabbitmq` | Download job queue |
 | `lbdl-downloader` | Parallel download workers |
 | `lbdl-tagger` | Parallel autotag workers |
+
+---
+
+## Development / testing
+
+From the repository root (with dependencies installed):
+
+```bash
+pip install pytest httpx
+pytest tests/test_smoke.py -v
+```
+
+Smoke tests cover authentication, static file resolution, password change, and merge path validation.
 
 ---
 
