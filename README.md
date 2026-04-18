@@ -169,10 +169,10 @@ From the repository root (with dependencies installed):
 
 ```bash
 pip install pytest httpx
-pytest tests/test_smoke.py -v
+pytest tests/ -v
 ```
 
-Smoke tests cover authentication, static file resolution, password change, merge path validation, and **`POST /api/jobs`** (401 without credentials — no `job_id`; 200 with session and a valid playlist URL).
+Tests cover authentication, static files, merge path guards, **`POST /api/jobs`**, and job eviction order (`tests/test_job_eviction.py`).
 
 ---
 
