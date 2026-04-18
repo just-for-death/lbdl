@@ -868,19 +868,35 @@ async def auth_change_password(request: Request):
 
 @app.post("/api/jobs")
 async def create_job(body: dict):
+    """Queue a playlist download: ListenBrainz or YouTube/Invidious (?list=…) URL."""
     url = body.get("playlist_url", "").strip()
     if not url:
-        return {"error": "playlist_url required"}
+        return JSONResponse({"error": "playlist_url required"}, status_code=400)
 
     source = detect_source(url)
     if source == "listenbrainz":
         if not get_lb_playlist_id(url):
-            return {"error": "Invalid ListenBrainz playlist URL — expected format: https://listenbrainz.org/playlist/<uuid>"}
+            return JSONResponse(
+                {
+                    "error": "Invalid ListenBrainz playlist URL — expected format: "
+                    "https://listenbrainz.org/playlist/<uuid>",
+                },
+                status_code=400,
+            )
     elif source == "invidious":
         if not get_yt_playlist_id(url):
-            return {"error": "No playlist ID found in URL — expected ?list=PLxxxxxx"}
+            return JSONResponse(
+                {"error": "No playlist ID found in URL — expected ?list=PLxxxxxx"},
+                status_code=400,
+            )
     else:
-        return {"error": "Unrecognised URL — paste a ListenBrainz or YouTube/Invidious playlist URL"}
+        return JSONResponse(
+            {
+                "error": "Unrecognised URL — use a ListenBrainz playlist or "
+                "YouTube/Invidious URL with ?list=…",
+            },
+            status_code=400,
+        )
 
     invidious_instance = body.get("invidious_instance", "").strip()
     job = Job(
@@ -899,10 +915,11 @@ async def create_job(body: dict):
 async def get_job(job_id: str):
     job = jobs.get(job_id)
     if not job:
-        return {"error": "not found"}
+        return JSONResponse({"error": "not found"}, status_code=404)
+    st = job.status.value if isinstance(job.status, JobStatus) else str(job.status)
     return {
         "id":            job.id,
-        "status":        job.status,
+        "status":        st,
         "source":        job.source,
         "playlist_name": job.playlist_name,
         "tracks": [

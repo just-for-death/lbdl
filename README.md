@@ -195,6 +195,79 @@ After pushing, redeploy in Portainer: **Stack → Editor → Update the stack** 
 
 ---
 
+## Playlist download API (scripts, mobile, other apps)
+
+All `/api/*` routes require **HTTP Basic** auth (same username/password as the web UI). Use `-u user:pass` with `curl`, or `Authorization: Basic …` in your HTTP client.
+
+### Start a download
+
+`POST /api/jobs`  
+`Content-Type: application/json`
+
+| Field | Required | Description |
+|--------|----------|-------------|
+| `playlist_url` | **yes** | ListenBrainz playlist URL (`https://listenbrainz.org/playlist/<uuid>`), **or** a YouTube / Invidious URL that includes a playlist id: `?list=PL…` |
+| `invidious_instance` | no | Only for YouTube-style playlists: override the Invidious base URL (e.g. `https://inv.nadeko.net`). If omitted, the server picks the instance from the playlist URL or from Settings. |
+
+**Success — HTTP 200**
+
+```json
+{"job_id": "550e8400-e29b-41d4-a716-446655440000", "source": "listenbrainz"}
+```
+
+`source` is `"listenbrainz"` or `"invidious"`.
+
+**Error — HTTP 400**
+
+```json
+{"error": "…"}
+```
+
+### Poll job status
+
+`GET /api/jobs/{job_id}`
+
+Returns JSON including:
+
+- `status`: `"queued"` → `"running"` → `"done"` or `"error"`
+- `playlist_name`, `source`
+- `tracks`: per-track `status` (`pending`, `found`, `done`, `failed`, …) and optional `error`
+- `logs`: text lines from the job
+
+**HTTP 404** if the job id is unknown or was evicted (only the last ~200 jobs are kept in memory).
+
+### Live progress (WebSocket)
+
+Connect to:
+
+`ws://<host>:<port>/ws/<job_id>` (or `wss://` behind HTTPS)
+
+Use the **same authentication** as the API: session cookie (browser) or `Authorization: Basic` on the WebSocket handshake if your client supports it.
+
+Message types include `state`, `playlist_info`, `track_start`, `track_downloading`, `track_done`, `log`, `job_done`, `error` — same as the web UI.
+
+### Example: `curl`
+
+```bash
+BASE="http://localhost:8032"   # or your server URL
+USER="admin"
+PASS="admin"
+
+# Start job (replace with a real playlist URL)
+RESP=$(curl -sS -u "$USER:$PASS" -X POST "$BASE/api/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{"playlist_url":"https://www.youtube.com/playlist?list=PLxxxxxxxxxx"}')
+echo "$RESP"
+JOB_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('job_id',''))")
+
+# Poll until done
+curl -sS -u "$USER:$PASS" "$BASE/api/jobs/$JOB_ID"
+```
+
+Files are written under `LBDL_DATA_DIR` (default `/app/music` in Docker). An M3U may be created under `_Playlists/` when the job finishes.
+
+---
+
 ## API Endpoints (selected)
 
 | Method | Path | Description |
