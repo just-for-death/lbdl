@@ -16,10 +16,11 @@ logger = logging.getLogger("lbdl.main")
 
 import requests
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from rapidfuzz import fuzz as _fuzz
 from ytmusicapi import YTMusic
+from app import auth as auth_module
 from app.organizer import (
     download_track as dl_track,
     already_exists,
@@ -690,6 +691,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="lbdl", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if not auth_module.auth_enabled():
+        return await call_next(request)
+    if auth_module.is_public_path(request.url.path):
+        return await call_next(request)
+    if auth_module.verify_request(request):
+        return await call_next(request)
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Unauthorized", "auth_required": True},
+        headers={"WWW-Authenticate": 'Bearer realm="lbdl"'},
+    )
+
+
 app.mount("/static", StaticFiles(directory="/app/static"), name="static")
 
 
@@ -750,6 +768,52 @@ async def favicon():
                         headers={"Cache-Control": "public, max-age=604800"})
 
 
+# ── Auth (cookie + Bearer) ────────────────────────────────────────────────────
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    """Whether auth is required and whether this request is authenticated."""
+    en = auth_module.auth_enabled()
+    return {
+        "auth_enabled": en,
+        "authenticated": auth_module.verify_request(request) if en else True,
+    }
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    """Validate API token and set HttpOnly session cookie (browser clients)."""
+    if not auth_module.auth_enabled():
+        return {"ok": True, "message": "Authentication not configured"}
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    token = (body.get("token") or "").strip()
+    if not auth_module.verify_token_string(token):
+        return JSONResponse({"ok": False, "error": "Invalid token"}, status_code=401)
+    resp = JSONResponse({"ok": True})
+    exp = auth_module.get_api_token()
+    assert exp is not None
+    resp.set_cookie(
+        auth_module.AUTH_COOKIE,
+        auth_module.session_cookie_value(exp),
+        httponly=True,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 365,
+        secure=auth_module.cookie_secure_flag(),
+        path="/",
+    )
+    return resp
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth_module.AUTH_COOKIE, path="/")
+    return resp
+
+
 # ── API ───────────────────────────────────────────────────────────────────────
 
 @app.post("/api/jobs")
@@ -801,6 +865,9 @@ async def get_job(job_id: str):
 
 @app.websocket("/ws/library")
 async def library_websocket(websocket: WebSocket):
+    if not auth_module.verify_websocket(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     lib_subscribers.append(websocket)
     # Send current state immediately
@@ -822,6 +889,9 @@ async def library_websocket(websocket: WebSocket):
 
 @app.websocket("/ws/server-logs")
 async def server_logs_websocket(websocket: WebSocket):
+    if not auth_module.verify_websocket(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     server_log_subscribers.append(websocket)
     for msg in server_log_history[-200:]:
@@ -836,6 +906,9 @@ async def server_logs_websocket(websocket: WebSocket):
 
 @app.websocket("/ws/{job_id}")
 async def job_websocket(websocket: WebSocket, job_id: str):
+    if not auth_module.verify_websocket(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     if job_id not in subscribers:
         subscribers[job_id] = []
@@ -2278,3 +2351,29 @@ async def api_status():
 @app.get("/")
 async def index():
     return FileResponse("/app/static/index.html")
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version="2.0",
+        description=(
+            "When `LBDL_API_TOKEN` is set, send `Authorization: Bearer <token>` on API requests "
+            "and WebSocket handshakes (or use `?token=` on WebSockets). The web UI uses a session cookie after sign-in."
+        ),
+        routes=app.routes,
+    )
+    openapi_schema.setdefault("components", {}).setdefault("securitySchemes", {})["Bearer"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Same value as the `LBDL_API_TOKEN` environment variable.",
+    }
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi

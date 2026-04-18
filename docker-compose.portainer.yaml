@@ -24,6 +24,9 @@ services:
       - LBDL_INVIDIOUS_INSTANCE=https://inv.nadeko.net
       - LBDL_ACOUSTID_KEY=
       - LBDL_TZ=UTC
+      # Optional API token (openssl rand -hex 32). Set LBDL_COOKIE_SECURE=1 behind HTTPS.
+      - LBDL_API_TOKEN=
+      - LBDL_COOKIE_SECURE=
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

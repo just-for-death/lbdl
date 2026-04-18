@@ -110,6 +110,25 @@ docker compose up -d
 | `LBDL_INVIDIOUS_INSTANCE` | `https://inv.nadeko.net` | Invidious instance to use |
 | `LBDL_ACOUSTID_KEY` | *(empty)* | AcoustID API key for fingerprinting |
 | `LBDL_TZ` | `UTC` | Timezone for cron |
+| `LBDL_API_TOKEN` | *(empty)* | If set, **all** `/api/*` and `/ws/*` require authentication (see below) |
+| `LBDL_COOKIE_SECURE` | *(empty)* | Set to `1` / `true` when the site is served over HTTPS so the login cookie is marked `Secure` |
+
+### Authentication (`LBDL_API_TOKEN`)
+
+When `LBDL_API_TOKEN` is **unset** or **empty**, the API and WebSockets remain open (same as older releases — suitable only on a trusted network).
+
+When set to a long random string:
+
+1. **Web UI** — Opening the app shows a sign-in screen. Paste the same value as the token; the server sets an HttpOnly session cookie so you stay logged in in that browser.
+2. **Scripts / curl** — Send the token on every request:
+   ```bash
+   curl -sS -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8032/api/status
+   ```
+3. **WebSockets** — Browsers send the session cookie automatically after login. Other clients can use:
+   - Header `Authorization: Bearer YOUR_TOKEN` on the WebSocket handshake (if your client supports it), or
+   - Query parameter: `wss://host/ws/library?token=YOUR_TOKEN` (avoid logging full URLs).
+
+Health checks (`GET /health`) and static assets (HTML, icons, `/static/*`, PWA files) stay **unauthenticated** so containers and install prompts still work.
 
 ---
 

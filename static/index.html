@@ -337,14 +337,38 @@
   .dm-empty{font-family:var(--mono);font-size:12px;color:var(--muted);text-align:center;padding:40px 20px}
   .dm-loading{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;color:var(--muted);padding:30px 20px}
   .dm-spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+  /* API login gate */
+  .auth-gate{display:none;position:fixed;inset:0;z-index:20000;background:var(--bg);align-items:center;justify-content:center;padding:24px}
+  .auth-gate.visible{display:flex}
+  .auth-box{width:100%;max-width:380px;background:var(--card);border:1px solid var(--border2);border-radius:10px;padding:28px 26px 24px}
+  .auth-title{font-family:var(--disp);font-size:20px;font-weight:800;margin-bottom:6px}
+  .auth-sub{font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:20px}
+  .auth-err{font-family:var(--mono);font-size:11px;color:var(--red);margin-top:10px;min-height:1.2em}
+  #btnLogout{display:none;background:none;border:1px solid var(--border2);border-radius:5px;padding:6px 12px;font-family:var(--mono);font-size:10px;color:var(--muted);cursor:pointer}
+  #btnLogout:hover{color:var(--text);border-color:var(--border)}
   </style>
 </head>
 <body>
+<div id="authGate" class="auth-gate">
+  <div class="auth-box">
+    <div class="auth-title">Sign in</div>
+    <div class="auth-sub">Enter the API token set in <code style="color:var(--accent)">LBDL_API_TOKEN</code> on the server (same value you use as <code style="color:var(--accent)">Authorization: Bearer</code> for scripts).</div>
+    <label class="field-label" for="authTokenInput">API token</label>
+    <input class="inp" id="authTokenInput" type="password" placeholder="Paste token" autocomplete="current-password" spellcheck="false"/>
+    <div style="margin-top:16px;display:flex;gap:10px;align-items:center">
+      <button type="button" class="btn btn-primary" id="authSubmitBtn" onclick="submitAuthLogin()">Continue</button>
+    </div>
+    <div class="auth-err" id="authErr"></div>
+  </div>
+</div>
 <div class="shell">
 
   <header>
     <div class="wordmark">lb<span>dl</span></div>
-    <div class="runtime-badge"><div class="dot"></div><span id="runtimeFmt">opus</span></div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <button type="button" id="btnLogout" onclick="authLogout()" title="Clear session cookie">Log out</button>
+      <div class="runtime-badge"><div class="dot"></div><span id="runtimeFmt">opus</span></div>
+    </div>
   </header>
 
   <nav class="tabs">
@@ -506,6 +530,68 @@
 </div>
 
 <script>
+// ── API auth: Bearer + cookie session ───────────────────────────────────────────
+async function apiFetch(url, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (opts.body && typeof opts.body === 'string' && !headers['Content-Type'] && !headers['content-type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const res = await fetch(url, { ...opts, credentials: 'include', headers });
+  if (res.status === 401 && typeof url === 'string' && url.startsWith('/api/') && !url.startsWith('/api/auth/')) {
+    const gate = document.getElementById('authGate');
+    if (gate) { gate.classList.add('visible'); document.getElementById('authErr').textContent = 'Session expired — sign in again.'; }
+  }
+  return res;
+}
+
+async function refreshAuthChrome() {
+  try {
+    const st = await apiFetch('/api/auth/status', { credentials: 'include' }).then(r => r.json());
+    const btn = document.getElementById('btnLogout');
+    if (btn) btn.style.display = (st.auth_enabled && st.authenticated) ? 'inline-block' : 'none';
+  } catch (e) {}
+}
+
+async function submitAuthLogin() {
+  const raw = (document.getElementById('authTokenInput')?.value || '').trim();
+  const err = document.getElementById('authErr');
+  const btn = document.getElementById('authSubmitBtn');
+  err.textContent = '';
+  if (!raw) { err.textContent = 'Enter a token.'; return; }
+  btn.disabled = true;
+  try {
+    const res = await apiFetch('/api/auth/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: raw }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      err.textContent = data.error || 'Invalid token';
+      btn.disabled = false;
+      return;
+    }
+    document.getElementById('authGate').classList.remove('visible');
+    document.getElementById('authTokenInput').value = '';
+    await startApp();
+    btn.disabled = false;
+    refreshAuthChrome();
+  } catch (e) {
+    err.textContent = 'Network error';
+    btn.disabled = false;
+  }
+}
+
+async function authLogout() {
+  try { await apiFetch('/api/auth/logout', { method: 'POST', credentials: 'include' }); } catch (e) {}
+  location.reload();
+}
+
+document.getElementById('authTokenInput')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitAuthLogin();
+});
+
 // ── State ──────────────────────────────────────────────────────────────────────
 let ws=null,libWs=null,logsOpen=false,advOpen=false,dlDone=0,dlTotal=0,settings={};
 let libTracks=[],libAlbums={},selectedAlbum=null,libFilter='';
@@ -527,6 +613,23 @@ const CRON_PRESETS=[{label:'every hour',value:'0 * * * *'},{label:'every 2h',val
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 async function init(){
+  try {
+    const st = await apiFetch('/api/auth/status', { credentials: 'include' }).then(r => r.json());
+    if (st.auth_enabled && !st.authenticated) {
+      document.getElementById('authGate').classList.add('visible');
+      refreshAuthChrome();
+      return;
+    }
+    document.getElementById('authGate').classList.remove('visible');
+    await startApp();
+    refreshAuthChrome();
+  } catch (e) {
+    document.getElementById('authErr').textContent = 'Could not reach server.';
+    document.getElementById('authGate').classList.add('visible');
+  }
+}
+
+async function startApp(){
   buildFormatGrid();buildCronPresets();
   document.getElementById('urlInput').addEventListener('keydown',e=>{if(e.key==='Enter')submitJob();});
   document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>switchTab(t.dataset.tab)));
@@ -582,7 +685,7 @@ function libDispatch(msg){
 async function loadLibraryIfEmpty(){await loadLibraryData();}
 async function loadLibraryData(){
   try{
-    const res=await fetch('/api/library/tracks');const data=await res.json();
+    const res=await apiFetch('/api/library/tracks');const data=await res.json();
     libTracks=data.tracks||[];buildAlbums();renderAlbumGrid();refreshTrackPanel();
     refreshUntaggedCount();
   }catch(e){}
@@ -710,7 +813,7 @@ function buildTrackRowHTML(t,i){
 // ── Library actions ────────────────────────────────────────────────────────────
 async function scanLibrary(){
   try{
-    const res = await fetch('/api/library/scan',{method:'POST'});
+    const res = await apiFetch('/api/library/scan',{method:'POST'});
     const j   = await res.json();
     if(j.error){console.warn('scan error:',j.error);return;}
     // Small delay so server sets running=true before first poll
@@ -718,7 +821,7 @@ async function scanLibrary(){
     showScanBar(0,0);
     const poll = setInterval(async()=>{
       try{
-        const r2   = await fetch('/api/library/tracks');
+        const r2   = await apiFetch('/api/library/tracks');
         const data = await r2.json();
         const scan = data.scan||{};
         if(scan.running){
@@ -744,7 +847,7 @@ async function autotagOne(tid, quiet=false){
   document.getElementById(`row-${tid}`)?.querySelector('.autotag-inline-log')?.remove();
 
   try{
-    const res=await fetch(`/api/library/track/${tid}/autotag`,{method:'POST'});
+    const res=await apiFetch(`/api/library/track/${tid}/autotag`,{method:'POST'});
     const data=await res.json();
     const logs=data.logs||[];
 
@@ -792,7 +895,7 @@ async function autotagAlbum(folder){
 async function fetchLyricsOne(tid, btn){
   if(btn){btn.disabled=true;btn.textContent='↻';}
   try{
-    const res = await fetch(`/api/library/track/${tid}/fetch-lyrics`,{method:'POST'});
+    const res = await apiFetch(`/api/library/track/${tid}/fetch-lyrics`,{method:'POST'});
     const data = await res.json();
     const lyrEl = document.getElementById(`lyrst-${tid}`);
     if(data.ok){
@@ -814,7 +917,7 @@ async function fetchLyricsOne(tid, btn){
 async function fetchLyricsForModal(tid, btn){
   if(btn){btn.disabled=true;btn.textContent='↻ Fetching…';}
   try{
-    const res  = await fetch(`/api/library/track/${tid}/fetch-lyrics`,{method:'POST'});
+    const res  = await apiFetch(`/api/library/track/${tid}/fetch-lyrics`,{method:'POST'});
     const data = await res.json();
     if(data.ok){
       const msg  = data.message||'Lyrics embedded';
@@ -844,7 +947,7 @@ async function autotagAll(){
 
   _atagPanelActive = true;
 
-  try{await fetch('/api/library/autotag-all',{method:'POST'});}
+  try{await apiFetch('/api/library/autotag-all',{method:'POST'});}
   catch(e){
     const s=document.getElementById('atagStats');
     if(s)s.textContent='Error: could not start';
@@ -856,7 +959,7 @@ async function autotagUntagged(){
   // First check how many untagged tracks exist
   let untaggedCount = 0;
   try {
-    const r = await fetch('/api/library/untagged-count');
+    const r = await apiFetch('/api/library/untagged-count');
     const d = await r.json();
     untaggedCount = d.untagged || 0;
     if(untaggedCount === 0){
@@ -882,7 +985,7 @@ async function autotagUntagged(){
 
   _atagPanelActive = true;
 
-  try{ await fetch('/api/library/autotag-untagged',{method:'POST'}); }
+  try{ await apiFetch('/api/library/autotag-untagged',{method:'POST'}); }
   catch(e){
     const s=document.getElementById('atagStats');
     if(s)s.textContent='Error: could not start';
@@ -891,7 +994,7 @@ async function autotagUntagged(){
 
 async function refreshUntaggedCount(){
   try{
-    const r = await fetch('/api/library/untagged-count');
+    const r = await apiFetch('/api/library/untagged-count');
     const d = await r.json();
     const el = document.getElementById('untaggedCount');
     if(el){
@@ -1028,7 +1131,7 @@ async function fetchMetaCandidates(tid, q) {
 
   const qs = currentQ ? `?q=${encodeURIComponent(currentQ)}` : '';
   try {
-    const res  = await fetch(`/api/library/track/${tid}/candidates${qs}`);
+    const res  = await apiFetch(`/api/library/track/${tid}/candidates${qs}`);
     const data = await res.json();
     if (_modalEl) _modalEl._candidates = data.candidates || [];
     renderCandidatesInWrap(tid, data.candidates || [], data.error);
@@ -1200,7 +1303,7 @@ async function applyCandidate(tid, idx, btn) {
   const chosen = candidates[idx];
   if (btn) { btn.disabled = true; btn.textContent = '↻ …'; }
   try {
-    const res  = await fetch(`/api/library/track/${tid}/apply-candidate`, {
+    const res  = await apiFetch(`/api/library/track/${tid}/apply-candidate`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(chosen),
     });
     const data = await res.json();
@@ -1226,7 +1329,7 @@ async function fetchCoverFromCandidate(tid, idx, btn) {
   if (!c.cover_url) return;
   if (btn) { btn.disabled = true; btn.textContent = '↻'; }
   try {
-    const res  = await fetch(`/api/library/track/${tid}/apply-cover`, {
+    const res  = await apiFetch(`/api/library/track/${tid}/apply-cover`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ url: c.cover_url }),
     });
@@ -1274,7 +1377,7 @@ async function fetchCovers(tid, forceQ) {
   wrap.innerHTML = '<div class="modal-loading"><div class="modal-spinner"></div>Searching covers…</div>';
 
   try {
-    const res  = await fetch(`/api/library/track/${tid}/cover-candidates?q=${encodeURIComponent(q)}`);
+    const res  = await apiFetch(`/api/library/track/${tid}/cover-candidates?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     const covers = data.covers || [];
     if (!covers.length) {
@@ -1330,7 +1433,7 @@ function renderCoverGrid(tid, covers, wrap) {
       applyBtn.disabled = true; applyBtn.textContent = '↻ Applying…';
       const payload = c.mb_rel_id ? {mb_rel_id: c.mb_rel_id} : c.is_embedded ? {is_embedded:true,tid} : {url: c.url};
       try {
-        const res = await fetch(`/api/library/track/${tid}/apply-cover`, {
+        const res = await apiFetch(`/api/library/track/${tid}/apply-cover`, {
           method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload),
         });
         const data = await res.json();
@@ -1361,7 +1464,7 @@ async function deleteTrack(tid, btn){
   if(!confirm('Delete this track from disk? This cannot be undone.')) return;
   btn.disabled=true; btn.textContent='…';
   try{
-    const res=await fetch(`/api/library/track/${tid}`,{method:'DELETE'});
+    const res=await apiFetch(`/api/library/track/${tid}`,{method:'DELETE'});
     const data=await res.json();
     if(data.ok){
       // Remove from in-memory state first, then re-render — panel rebuild removes the row cleanly
@@ -1385,7 +1488,7 @@ async function saveEdit(tid){
   const el=document.getElementById(`tagst-${tid}`);
   if(el){el.className='lib-tag-status tagging';el.textContent='↻';}
   try{
-    const res=await fetch(`/api/library/track/${tid}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const res=await apiFetch(`/api/library/track/${tid}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const data=await res.json();
     if(data.ok){if(el){el.className='lib-tag-status ok';el.textContent='✓';setTimeout(()=>{el.textContent='';el.className='lib-tag-status';},3000);}toggleEdit(tid);}
     else{if(el){el.className='lib-tag-status err';el.textContent='✗ '+(data.error||'');}}
@@ -1412,7 +1515,7 @@ async function submitJob(){
   try{
     const body={playlist_url:url};
     const inv=document.getElementById('invidiousInput').value.trim();if(inv)body.invidious_instance=inv;
-    const res=await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const res=await apiFetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const data=await res.json();
     if(data.error){showErr(data.error);return;}
     document.getElementById('urlInput').value='';connectJob(data.job_id);
@@ -1455,7 +1558,7 @@ function addLog(msg){const box=document.getElementById('logBox');const line=docu
 function toggleLogs(){logsOpen=!logsOpen;document.getElementById('logBox').classList.toggle('open',logsOpen);document.getElementById('lbc').textContent=logsOpen?'▴':'▾';document.getElementById('lbt').textContent=logsOpen?'hide logs':'show logs';}
 
 // ── Playlists ──────────────────────────────────────────────────────────────────
-async function loadPlaylists(){try{const list=await fetch('/api/playlists').then(r=>r.json());renderPlaylists(Array.isArray(list)?list:[]);}catch(e){}}
+async function loadPlaylists(){try{const list=await apiFetch('/api/playlists').then(r=>r.json());renderPlaylists(Array.isArray(list)?list:[]);}catch(e){}}
 function renderPlaylists(list){
   const box=document.getElementById('playlistContainer');
   if(!list.length){box.innerHTML='<div class="empty">No playlists yet.</div>';return;}
@@ -1464,14 +1567,14 @@ function renderPlaylists(list){
   box.innerHTML='';box.appendChild(wrap);
 }
 function redownload(url){document.getElementById('urlInput').value=url;switchTab('download');submitJob();}
-async function delPlaylist(url){try{await fetch('/api/playlists',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});loadPlaylists();}catch(e){}}
+async function delPlaylist(url){try{await apiFetch('/api/playlists',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});loadPlaylists();}catch(e){}}
 
 // ── Settings ───────────────────────────────────────────────────────────────────
 function buildFormatGrid(){const g=document.getElementById('formatGrid');FORMATS.forEach(f=>{const b=document.createElement('button');b.className='fmt-btn';b.dataset.fmt=f.id;b.textContent=f.label;b.onclick=()=>selectFormat(f.id);g.appendChild(b);});}
 function selectFormat(id){document.querySelectorAll('.fmt-btn').forEach(b=>b.classList.toggle('active',b.dataset.fmt===id));}
 function buildCronPresets(){const w=document.getElementById('cronPresets');CRON_PRESETS.forEach(p=>{const b=document.createElement('button');b.className='cron-preset';b.dataset.cron=p.value;b.textContent=p.label;b.onclick=()=>{document.getElementById('sCron').value=p.value;hlCron(p.value);};w.appendChild(b);});}
 function hlCron(val){document.querySelectorAll('.cron-preset').forEach(b=>b.classList.toggle('active',b.dataset.cron===val));}
-async function loadSettings(){try{settings=await fetch('/api/settings').then(r=>r.json());applyUI(settings);}catch(e){}}
+async function loadSettings(){try{settings=await apiFetch('/api/settings').then(r=>r.json());applyUI(settings);}catch(e){}}
 function applyUI(s){
   const map={sLbToken:'lb_token',sInvidious:'invidious_instance',sCron:'sync_cron',sGotifyUrl:'gotify_url',sGotifyToken:'gotify_token',sAcoustidKey:'acoustid_key'};
   Object.entries(map).forEach(([id,k])=>{const el=document.getElementById(id);if(el)el.value=s[k]||'';});
@@ -1518,7 +1621,7 @@ async function saveSettings(){
   const payload={lb_token:document.getElementById('sLbToken').value.trim(),invidious_instance:document.getElementById('sInvidious').value.trim(),audio_format:fmt,audio_quality:document.getElementById('qualitySlider').value,sync_cron:document.getElementById('sCron').value.trim(),gotify_url:document.getElementById('sGotifyUrl').value.trim(),gotify_token:document.getElementById('sGotifyToken').value.trim(),gotify_priority:parseInt(document.getElementById('sGotifyPriority').value)||5,acoustid_key:document.getElementById('sAcoustidKey').value.trim(),fetch_lyrics:_fetchLyricsEnabled,autotag_after_sync:_autotagAfterSyncEnabled};
   const st=document.getElementById('saveStatus');st.textContent='Saving…';st.className='save-status';
   try{
-    const res=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const res=await apiFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const data=await res.json();
     if(data.ok){settings=data.settings;document.getElementById('runtimeFmt').textContent=payload.audio_format;st.textContent='✓ Saved';st.className='save-status ok';setTimeout(()=>{st.textContent='';st.className='save-status';},3000);}
     else{st.textContent=data.error||'Error';st.className='save-status err';}
@@ -1526,7 +1629,7 @@ async function saveSettings(){
 }
 async function testGotify(){
   const r=document.getElementById('testResult');r.textContent='Sending…';r.className='test-result';
-  try{const res=await fetch('/api/settings/test-gotify',{method:'POST'});const d=await res.json();if(d.ok){r.textContent='✓ Sent';r.className='test-result ok';}else{r.textContent='✗ '+(d.error||'');r.className='test-result err';}}
+  try{const res=await apiFetch('/api/settings/test-gotify',{method:'POST'});const d=await res.json();if(d.ok){r.textContent='✓ Sent';r.className='test-result ok';}else{r.textContent='✗ '+(d.error||'');r.className='test-result err';}}
   catch(e){r.textContent='✗ error';r.className='test-result err';}
   setTimeout(()=>{r.textContent='';},5000);
 }
@@ -1558,7 +1661,7 @@ async function openDuplicates() {
   document.body.appendChild(_dupOverlay);
 
   try {
-    const res  = await fetch('/api/library/duplicates');
+    const res  = await apiFetch('/api/library/duplicates');
     const data = await res.json();
     const groups = data.groups || [];
 
@@ -1623,7 +1726,7 @@ async function deleteDupTrack(tid, gi, ti, btn) {
   btn.textContent = '…';
 
   try {
-    const res  = await fetch(`/api/library/track/${tid}`, {method: 'DELETE'});
+    const res  = await apiFetch(`/api/library/track/${tid}`, {method: 'DELETE'});
     const data = await res.json();
     if (data.ok) {
       const row = document.getElementById(`dupt-${gi}-${ti}`);
@@ -1669,7 +1772,7 @@ async function openArtistMerge() {
   document.body.appendChild(_mergeOverlay);
 
   try {
-    const res    = await fetch('/api/library/artist-groups');
+    const res    = await apiFetch('/api/library/artist-groups');
     const data   = await res.json();
     const groups = data.groups || [];
 
@@ -1744,7 +1847,7 @@ async function doMergeArtists(gi, btn) {
   const sourceFolders = group.map(a => a.folder);
 
   try {
-    const res  = await fetch('/api/library/merge-artists', {
+    const res  = await apiFetch('/api/library/merge-artists', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({target_name: targetName, source_folders: sourceFolders}),
