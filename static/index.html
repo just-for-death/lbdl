@@ -342,7 +342,6 @@
   .auth-gate.visible{display:flex}
   .auth-box{width:100%;max-width:380px;background:var(--card);border:1px solid var(--border2);border-radius:10px;padding:28px 26px 24px}
   .auth-title{font-family:var(--disp);font-size:20px;font-weight:800;margin-bottom:6px}
-  .auth-sub{font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:20px}
   .auth-err{font-family:var(--mono);font-size:11px;color:var(--red);margin-top:10px;min-height:1.2em}
   #btnLogout{display:none;background:none;border:1px solid var(--border2);border-radius:5px;padding:6px 12px;font-family:var(--mono);font-size:10px;color:var(--muted);cursor:pointer}
   #btnLogout:hover{color:var(--text);border-color:var(--border)}
@@ -352,11 +351,10 @@
 <div id="authGate" class="auth-gate">
   <div class="auth-box">
     <div class="auth-title">Sign in</div>
-    <div class="auth-sub">Default username and password are <code style="color:var(--accent)">admin</code> / <code style="color:var(--accent)">admin</code> until you change them under Settings → Account.</div>
     <label class="field-label" for="authUserInput">Username</label>
-    <input class="inp" id="authUserInput" type="text" placeholder="admin" autocomplete="username" spellcheck="false"/>
+    <input class="inp" id="authUserInput" type="text" autocomplete="username" spellcheck="false"/>
     <label class="field-label" for="authPassInput" style="margin-top:12px">Password</label>
-    <input class="inp" id="authPassInput" type="password" placeholder="Password" autocomplete="current-password" spellcheck="false"/>
+    <input class="inp" id="authPassInput" type="password" autocomplete="current-password" spellcheck="false"/>
     <div style="margin-top:16px;display:flex;gap:10px;align-items:center">
       <button type="button" class="btn btn-primary" id="authSubmitBtn" onclick="submitAuthLogin()">Continue</button>
     </div>
