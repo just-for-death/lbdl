@@ -88,15 +88,19 @@ A self-hosted music library manager. Paste a ListenBrainz or YouTube/Invidious p
 ```bash
 git clone https://github.com/justxforxdocker/lbdl
 cd lbdl
-cp docker-compose.portainer.yaml docker-compose.yaml
-# edit paths and tokens
-docker compose pull
-docker compose up -d
+# Optional: edit environment: in docker-compose.yaml (tokens, TZ, HTTPS cookie, etc.)
+docker compose build && docker compose up -d
 ```
+
+The repo includes a minimal **`.env`** that sets **`COMPOSE_PARALLEL_LIMIT=1`** so Compose does not build services in parallel (avoids interleaved build logs). It does not inject app config into containers; that stays in **`docker-compose.yaml`**. To disable, remove the file or set `COMPOSE_DISABLE_ENV_FILE=1`.
+
+Use `docker compose pull` instead of `build` if you use prebuilt images from a registry.
 
 ---
 
 ## Environment Variables
+
+Defaults for Docker are set in **`docker-compose.yaml`** under each service’s `environment:` block. The project **`.env`** only tunes the Compose CLI (see Quick Start); it is not used for service `environment:` substitution.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -168,7 +172,7 @@ pip install pytest httpx
 pytest tests/test_smoke.py -v
 ```
 
-Smoke tests cover authentication, static file resolution, password change, and merge path validation.
+Smoke tests cover authentication, static file resolution, password change, merge path validation, and **`POST /api/jobs`** (401 without credentials — no `job_id`; 200 with session and a valid playlist URL).
 
 ---
 
