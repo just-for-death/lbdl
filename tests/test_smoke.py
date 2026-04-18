@@ -45,6 +45,42 @@ def test_api_requires_login(fresh_app):
     assert c.get("/api/status").status_code == 401
 
 
+def test_post_jobs_without_auth_returns_401_no_job_id(fresh_app):
+    """Unauthenticated playlist download request must not return a job_id."""
+    from fastapi.testclient import TestClient
+
+    c = TestClient(fresh_app)
+    r = c.post(
+        "/api/jobs",
+        json={
+            "playlist_url": "https://listenbrainz.org/playlist/00000000-0000-0000-0000-000000000001",
+        },
+    )
+    assert r.status_code == 401
+    data = r.json()
+    assert "job_id" not in data
+    assert data.get("detail") == "Unauthorized" or data.get("auth_required") is True
+
+
+def test_post_jobs_with_auth_returns_job_id(fresh_app):
+    """Authenticated POST /api/jobs returns 200 and a job_id (does not run full download)."""
+    from fastapi.testclient import TestClient
+
+    c = TestClient(fresh_app)
+    c.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    r = c.post(
+        "/api/jobs",
+        json={
+            "playlist_url": "https://listenbrainz.org/playlist/00000000-0000-0000-0000-000000000002",
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("job_id")
+    assert len(data["job_id"]) == 36
+    assert data.get("source") == "listenbrainz"
+
+
 def test_login_cookie_and_basic(fresh_app):
     from fastapi.testclient import TestClient
 

@@ -1,6 +1,9 @@
-version: '3.8'
-
 # lbdl — local development / self-hosted compose
+#
+# Service env defaults are set below in environment: (no substitution from .env).
+# The optional project `.env` file only sets COMPOSE_PARALLEL_LIMIT for the Compose
+# CLI so `docker compose build` runs one image at a time (readable logs).
+# Edit environment: here for tokens, timezone, HTTPS cookie, Invidious URL, cron, etc.
 #
 # Data is stored in named Docker volumes by default.
 # To use host-directory bind mounts instead, replace the named volume entries
@@ -28,12 +31,12 @@ services:
       - LBDL_AUDIO_FORMAT=opus
       - LBDL_AUDIO_QUALITY=0
       - LBDL_SCHEDULER_CRON=0 */2 * * *
-      - LBDL_ACOUSTID_KEY=${LBDL_ACOUSTID_KEY:-}
-      - LBDL_LB_TOKEN=${LBDL_LB_TOKEN:-}
-      - LBDL_INVIDIOUS_INSTANCE=${LBDL_INVIDIOUS_INSTANCE:-https://inv.nadeko.net}
-      - LBDL_TZ=${TZ:-UTC}
+      - LBDL_ACOUSTID_KEY=
+      - LBDL_LB_TOKEN=
+      - LBDL_INVIDIOUS_INSTANCE=https://inv.nadeko.net
+      - LBDL_TZ=UTC
       # Set to 1 when serving the UI only over HTTPS so the session cookie is Secure
-      - LBDL_COOKIE_SECURE=${LBDL_COOKIE_SECURE:-}
+      - LBDL_COOKIE_SECURE=
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -60,8 +63,8 @@ services:
       - LBDL_YTDLP_DIR=/app/config
       - LBDL_AUDIO_FORMAT=opus
       - LBDL_AUDIO_QUALITY=0
-      - LBDL_SCHEDULER_CRON=${LBDL_SCHEDULER_CRON:-0 */2 * * *}
-      - LBDL_TZ=${TZ:-UTC}
+      - LBDL_SCHEDULER_CRON=0 */2 * * *
+      - LBDL_TZ=UTC
     volumes:
       - lbdl-music:/app/music
       - lbdl-config:/app/config
@@ -143,7 +146,7 @@ services:
       - REDIS_URL=redis://lbdl-redis:6379/0
       - QUEUE_URL=amqp://guest:guest@lbdl-rabbitmq:5672//
       - WORKER_CONCURRENCY=2
-      - LBDL_ACOUSTID_KEY=${LBDL_ACOUSTID_KEY:-}
+      - LBDL_ACOUSTID_KEY=
     volumes:
       - lbdl-music:/app/music
       - lbdl-config:/app/config
