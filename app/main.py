@@ -7,6 +7,7 @@ import time
 import urllib.parse
 import uuid
 from asyncio import Queue
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -407,12 +408,13 @@ async def process_job(job: Job):
             if untagged:
                 await log(f"  ⟳ Auto-tagging {len(untagged)} untagged track(s)…")
 
-                # Wrap the batch so we can append a summary line to this job's log
+                # Wrap the batch so job WebSocket receives per-track lines + summary
                 async def _autotag_then_log(tracks=untagged):
-                    await _run_autotag_batch(tracks)
-                    done_t  = sum(1 for t in tracks if t.get("status") != "failed")
-                    total_t = len(tracks)
-                    await log(f"  ✓ Auto-tag complete — {total_t} processed")
+                    summary = await _run_autotag_batch(tracks, job_log=log)
+                    await log(
+                        f"  ✓ Auto-tag complete — {summary['done']} tagged, "
+                        f"{summary['failed']} failed, {summary['skipped']} skipped"
+                    )
 
                 asyncio.ensure_future(_autotag_then_log())
             else:
@@ -1650,10 +1652,16 @@ async def _dedup_scheduler():
             logger.error("[dedup-scheduler] Error: %s", e)
 
 
-async def _run_autotag_batch(track_list: list[dict]):
+async def _run_autotag_batch(
+    track_list: list[dict],
+    *,
+    job_log: Callable[[str], Awaitable[None]] | None = None,
+) -> dict[str, int]:
     """
     Shared autotag worker used by both autotag-all and autotag-untagged.
     Broadcasts autotag_start / autotag_progress / autotag_log / autotag_done events.
+    When ``job_log`` is set (e.g. post-download auto-tag), each track also appends
+    to that download job's log and ``/ws/{job_id}`` stream.
     """
     global _autotag_running
     _autotag_running = True
@@ -1675,6 +1683,11 @@ async def _run_autotag_batch(track_list: list[dict]):
             "index": i, "total": total, "tid": tid,
             "title": meta.get("title", ""), "artist": meta.get("artist", ""),
         })
+
+        if job_log:
+            ar = (meta.get("artist") or "")[:40]
+            tt = (meta.get("title") or "")[:56]
+            await job_log(f"  ⟳ Auto-tag [{i + 1}/{total}] {ar} — {tt}")
 
         if not path.exists():
             await lib_broadcast({"type": "autotag_log", "tid": tid,
@@ -1734,6 +1747,7 @@ async def _run_autotag_batch(track_list: list[dict]):
         "type": "autotag_done",
         "count": total, "done": done, "failed": failed, "skipped": skipped,
     })
+    return {"done": done, "failed": failed, "skipped": skipped}
 
 
 @app.get("/api/library/untagged-count")
